@@ -476,8 +476,12 @@ CREATE INDEX IF NOT EXISTS idx_audit_module ON audit_logs(module);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
 `;
 
-export function initSchema(db) {
-  db.exec(schemaSQL);
+export async function initSchema(db) {
+  if (db && typeof db.executeMultiple === 'function') {
+    await db.executeMultiple(schemaSQL);
+  } else if (db && typeof db.exec === 'function') {
+    db.exec(schemaSQL);
+  }
 }
 
 export default {

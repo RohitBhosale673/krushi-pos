@@ -13,17 +13,21 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // List All Business Settings
-router.get('/', requirePermission('settings', 'manage'), (req, res) => {
-  const settings = queryAll('SELECT * FROM business_settings ORDER BY setting_group ASC');
-  const settingsMap = {};
-  settings.forEach(s => {
-    settingsMap[s.setting_key] = s.setting_value;
-  });
-  return res.json({ success: true, settings: settingsMap, raw: settings });
+router.get('/', requirePermission('settings', 'manage'), async (req, res) => {
+  try {
+    const settings = await queryAll('SELECT * FROM business_settings ORDER BY setting_group ASC');
+    const settingsMap = {};
+    settings.forEach(s => {
+      settingsMap[s.setting_key] = s.setting_value;
+    });
+    return res.json({ success: true, settings: settingsMap, raw: settings });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 // Update Settings
-router.post('/update', requirePermission('settings', 'manage'), (req, res) => {
+router.post('/update', requirePermission('settings', 'manage'), async (req, res) => {
   const settingsObj = req.body;
 
   if (!settingsObj || typeof settingsObj !== 'object') {
@@ -31,9 +35,9 @@ router.post('/update', requirePermission('settings', 'manage'), (req, res) => {
   }
 
   try {
-    transaction(() => {
+    await transaction(async () => {
       for (const [key, val] of Object.entries(settingsObj)) {
-        run('INSERT INTO business_settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP', [key, String(val)]);
+        await run('INSERT INTO business_settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP', [key, String(val)]);
       }
     });
 
@@ -50,7 +54,7 @@ router.get('/backup/download', requirePermission('settings', 'manage'), (req, re
   const dbPath = process.env.DB_PATH || path.resolve(__dirname, '../../data/krushipos.db');
 
   if (!fs.existsSync(dbPath)) {
-    return res.status(404).json({ success: false, message: 'Database file not found.' });
+    return res.status(404).json({ success: false, message: 'Local database file not found (cloud database may be active).' });
   }
 
   const filename = `KrushiPOS_DB_Backup_${new Date().toISOString().replace(/[:.]/g, '-')}.db`;

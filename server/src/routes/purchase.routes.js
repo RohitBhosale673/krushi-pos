@@ -7,63 +7,71 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // List Purchase Invoices
-router.get('/', requirePermission('purchases', 'view'), (req, res) => {
-  const { supplier_id, search } = req.query;
+router.get('/', requirePermission('purchases', 'view'), async (req, res) => {
+  try {
+    const { supplier_id, search } = req.query;
 
-  let sql = `
-    SELECT p.*, s.company_name AS supplier_name, s.mobile AS supplier_mobile, u.username AS user_name
-    FROM purchases p
-    JOIN suppliers s ON p.supplier_id = s.id
-    LEFT JOIN users u ON p.user_id = u.id
-    WHERE 1=1
-  `;
-  const params = [];
+    let sql = `
+      SELECT p.*, s.company_name AS supplier_name, s.mobile AS supplier_mobile, u.username AS user_name
+      FROM purchases p
+      JOIN suppliers s ON p.supplier_id = s.id
+      LEFT JOIN users u ON p.user_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
 
-  if (supplier_id) {
-    sql += ` AND p.supplier_id = ?`;
-    params.push(supplier_id);
+    if (supplier_id) {
+      sql += ` AND p.supplier_id = ?`;
+      params.push(supplier_id);
+    }
+
+    if (search) {
+      sql += ` AND (p.invoice_no LIKE ? OR p.supplier_invoice_no LIKE ? OR s.company_name LIKE ?)`;
+      const term = `%${search}%`;
+      params.push(term, term, term);
+    }
+
+    sql += ` ORDER BY p.purchase_date DESC, p.id DESC`;
+
+    const purchases = await queryAll(sql, params);
+    return res.json({ success: true, purchases });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  if (search) {
-    sql += ` AND (p.invoice_no LIKE ? OR p.supplier_invoice_no LIKE ? OR s.company_name LIKE ?)`;
-    const term = `%${search}%`;
-    params.push(term, term, term);
-  }
-
-  sql += ` ORDER BY p.purchase_date DESC, p.id DESC`;
-
-  const purchases = queryAll(sql, params);
-  return res.json({ success: true, purchases });
 });
 
 // Single Purchase Invoice Details
-router.get('/:id', requirePermission('purchases', 'view'), (req, res) => {
-  const purchaseId = req.params.id;
+router.get('/:id', requirePermission('purchases', 'view'), async (req, res) => {
+  try {
+    const purchaseId = req.params.id;
 
-  const purchase = queryOne(`
-    SELECT p.*, s.company_name AS supplier_name, s.mobile AS supplier_mobile, s.gstin AS supplier_gstin, u.username AS user_name
-    FROM purchases p
-    JOIN suppliers s ON p.supplier_id = s.id
-    LEFT JOIN users u ON p.user_id = u.id
-    WHERE p.id = ?
-  `, [purchaseId]);
+    const purchase = await queryOne(`
+      SELECT p.*, s.company_name AS supplier_name, s.mobile AS supplier_mobile, s.gstin AS supplier_gstin, u.username AS user_name
+      FROM purchases p
+      JOIN suppliers s ON p.supplier_id = s.id
+      LEFT JOIN users u ON p.user_id = u.id
+      WHERE p.id = ?
+    `, [purchaseId]);
 
-  if (!purchase) {
-    return res.status(404).json({ success: false, message: 'Purchase invoice not found.' });
+    if (!purchase) {
+      return res.status(404).json({ success: false, message: 'Purchase invoice not found.' });
+    }
+
+    const items = await queryAll(`
+      SELECT pi.*, prd.name AS product_name, prd.product_code, prd.sku
+      FROM purchase_items pi
+      JOIN products prd ON pi.product_id = prd.id
+      WHERE pi.purchase_id = ?
+    `, [purchaseId]);
+
+    return res.json({ success: true, purchase, items });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  const items = queryAll(`
-    SELECT pi.*, prd.name AS product_name, prd.product_code, prd.sku
-    FROM purchase_items pi
-    JOIN products prd ON pi.product_id = prd.id
-    WHERE pi.purchase_id = ?
-  `, [purchaseId]);
-
-  return res.json({ success: true, purchase, items });
 });
 
 // Create Purchase Invoice (Auto Batch & Stock creation + Supplier Payable update)
-router.post('/', requirePermission('purchases', 'create'), (req, res) => {
+router.post('/', requirePermission('purchases', 'create'), async (req, res) => {
   const {
     supplier_id, supplier_invoice_no, purchase_date, items, paid_amount = 0,
     freight_charges = 0, other_charges = 0, notes
@@ -73,16 +81,16 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
     return res.status(400).json({ success: false, message: 'Supplier, Purchase Date, and Items list are required.' });
   }
 
-  const supplier = queryOne('SELECT * FROM suppliers WHERE id = ?', [supplier_id]);
-  if (!supplier) {
-    return res.status(404).json({ success: false, message: 'Supplier not found.' });
-  }
-
   try {
+    const supplier = await queryOne('SELECT * FROM suppliers WHERE id = ?', [supplier_id]);
+    if (!supplier) {
+      return res.status(404).json({ success: false, message: 'Supplier not found.' });
+    }
+
     let purchaseId;
     let newInvoiceNo;
 
-    transaction(() => {
+    await transaction(async () => {
       let totalTaxable = 0;
       let totalTax = 0;
       let grandTotal = 0;
@@ -131,15 +139,15 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
       const paid = parseFloat(paid_amount) || 0;
       const due = Math.max(0, grandTotal - paid);
 
-      const countRow = queryOne('SELECT COUNT(*) AS total FROM purchases');
-      newInvoiceNo = `PUR/${new Date().getFullYear()}/${String(countRow.total + 1).padStart(4, '0')}`;
+      const countRow = await queryOne('SELECT COUNT(*) AS total FROM purchases');
+      newInvoiceNo = `PUR/${new Date().getFullYear()}/${String((countRow?.total || 0) + 1).padStart(4, '0')}`;
 
       let pStatus = 'PAID';
       if (paid === 0 && due > 0) pStatus = 'CREDIT';
       else if (due > 0) pStatus = 'PARTIAL';
 
       // Insert Purchase Header
-      const resPurch = run(`
+      const resPurch = await run(`
         INSERT INTO purchases (
           invoice_no, supplier_invoice_no, supplier_id, user_id, purchase_date,
           total_taxable, total_tax, freight_charges, other_charges, grand_total,
@@ -155,7 +163,7 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
 
       // Process Items: Create / Update Batches and Stock Movements
       for (const item of processedItems) {
-        run(`
+        await run(`
           INSERT INTO purchase_items (
             purchase_id, product_id, batch_no, mfg_date, exp_date, qty, unit,
             purchase_rate, mrp, selling_rate, gst_rate, taxable_amount, tax_amount, total_amount
@@ -166,7 +174,7 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
         ]);
 
         // Check if batch exists
-        const existingBatch = queryOne('SELECT * FROM product_batches WHERE product_id = ? AND batch_no = ?', [item.product_id, item.batch_no]);
+        const existingBatch = await queryOne('SELECT * FROM product_batches WHERE product_id = ? AND batch_no = ?', [item.product_id, item.batch_no]);
 
         let batchId;
         const today = new Date().toISOString().split('T')[0];
@@ -176,20 +184,20 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
           batchId = existingBatch.id;
           const newAvail = existingBatch.available_qty + item.qty;
           const newRec = existingBatch.qty_received + item.qty;
-          run(`
+          await run(`
             UPDATE product_batches 
             SET qty_received = ?, available_qty = ?, purchase_rate = ?, selling_rate = ?, mrp = ?, status = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `, [newRec, newAvail, item.purchase_rate, item.selling_rate, item.mrp, status, batchId]);
 
-          run(`
+          await run(`
             INSERT INTO stock_movements (
               product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, reference_type, reference_id, notes, user_id
             ) VALUES (?, ?, 'purchase', ?, ?, ?, 'purchase', ?, 'Purchase stock update', ?)
           `, [item.product_id, batchId, item.qty, existingBatch.available_qty, newAvail, newInvoiceNo, req.user.id]);
 
         } else {
-          const resBatch = run(`
+          const resBatch = await run(`
             INSERT INTO product_batches (
               product_id, batch_no, mfg_date, exp_date, purchase_rate, selling_rate, mrp,
               qty_received, qty_sold, available_qty, status
@@ -201,7 +209,7 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
 
           batchId = resBatch.lastInsertRowid;
 
-          run(`
+          await run(`
             INSERT INTO stock_movements (
               product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, reference_type, reference_id, notes, user_id
             ) VALUES (?, ?, 'purchase', ?, 0, ?, 'purchase', ?, 'New batch purchase stock', ?)
@@ -212,16 +220,16 @@ router.post('/', requirePermission('purchases', 'create'), (req, res) => {
       // Update Supplier Balance & Transaction Ledger if unpaid amount remains
       if (due > 0) {
         const newSuppBal = supplier.current_balance + due;
-        run('UPDATE suppliers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newSuppBal, supplier_id]);
+        await run('UPDATE suppliers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newSuppBal, supplier_id]);
 
-        run(`
+        await run(`
           INSERT INTO supplier_transactions (supplier_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id)
           VALUES (?, 'PURCHASE', ?, ?, 'Credit', 'purchase', ?, ?, ?)
         `, [supplier_id, due, newSuppBal, newInvoiceNo, `Purchase invoice ${newInvoiceNo}`, req.user.id]);
       }
     });
 
-    logAuditAction(req.user.id, 'CREATE_PURCHASE', 'purchases', purchaseId, null, { invoice_no: newInvoiceNo, grandTotal }, req);
+    logAuditAction(req.user.id, 'CREATE_PURCHASE', 'purchases', purchaseId, null, { invoice_no: newInvoiceNo, grandTotal: grandTotal || 0 }, req);
 
     return res.json({ success: true, message: 'Purchase invoice recorded successfully', purchaseId, invoice_no: newInvoiceNo });
   } catch (err) {

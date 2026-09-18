@@ -7,45 +7,54 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // List Expenses with category & date filters
-router.get('/', requirePermission('expenses', 'manage'), (req, res) => {
-  const { category, start_date, end_date } = req.query;
+router.get('/', requirePermission('expenses', 'manage'), async (req, res) => {
+  try {
+    const { category, start_date, end_date } = req.query;
 
-  let sql = `
-    SELECT e.*, u.username AS user_name
-    FROM expenses e
-    LEFT JOIN users u ON e.user_id = u.id
-    WHERE 1=1
-  `;
-  const params = [];
+    let sql = `
+      SELECT e.*, u.username AS user_name
+      FROM expenses e
+      LEFT JOIN users u ON e.user_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
 
-  if (category) {
-    sql += ` AND e.category = ?`;
-    params.push(category);
+    if (category) {
+      sql += ` AND e.category = ?`;
+      params.push(category);
+    }
+
+    if (start_date) {
+      sql += ` AND e.expense_date >= ?`;
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      sql += ` AND e.expense_date <= ?`;
+      params.push(end_date);
+    }
+
+    sql += ` ORDER BY e.expense_date DESC, e.id DESC`;
+
+    const expenses = await queryAll(sql, params);
+
+    let totSql = 'SELECT COALESCE(SUM(amount), 0) AS grand_total FROM expenses WHERE 1=1';
+    const totParams = [];
+    if (category) {
+      totSql += ' AND category = ?';
+      totParams.push(category);
+    }
+    const totRow = await queryOne(totSql, totParams);
+    const totalExpense = totRow?.grand_total || 0;
+
+    return res.json({ success: true, expenses, totalExpense });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  if (start_date) {
-    sql += ` AND e.expense_date >= ?`;
-    params.push(start_date);
-  }
-
-  if (end_date) {
-    sql += ` AND e.expense_date <= ?`;
-    params.push(end_date);
-  }
-
-  sql += ` ORDER BY e.expense_date DESC, e.id DESC`;
-
-  const expenses = queryAll(sql, params);
-
-  const totalExpense = queryOne(`
-    SELECT COALESCE(SUM(amount), 0) AS grand_total FROM expenses WHERE 1=1 ${category ? "AND category = '" + category + "'" : ""}
-  `)?.grand_total || 0;
-
-  return res.json({ success: true, expenses, totalExpense });
 });
 
 // Create Expense
-router.post('/', requirePermission('expenses', 'manage'), (req, res) => {
+router.post('/', requirePermission('expenses', 'manage'), async (req, res) => {
   const { category, title, amount, expense_date, payment_method, recipient, reference_no, description } = req.body;
 
   if (!category || !title || !amount || !expense_date) {
@@ -53,7 +62,7 @@ router.post('/', requirePermission('expenses', 'manage'), (req, res) => {
   }
 
   try {
-    const resExp = run(`
+    const resExp = await run(`
       INSERT INTO expenses (
         category, title, amount, expense_date, payment_method, recipient, reference_no, description, user_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -71,18 +80,22 @@ router.post('/', requirePermission('expenses', 'manage'), (req, res) => {
 });
 
 // Delete Expense
-router.delete('/:id', requirePermission('expenses', 'manage'), (req, res) => {
+router.delete('/:id', requirePermission('expenses', 'manage'), async (req, res) => {
   const expenseId = req.params.id;
-  const old = queryOne('SELECT * FROM expenses WHERE id = ?', [expenseId]);
+  try {
+    const old = await queryOne('SELECT * FROM expenses WHERE id = ?', [expenseId]);
 
-  if (!old) {
-    return res.status(404).json({ success: false, message: 'Expense record not found.' });
+    if (!old) {
+      return res.status(404).json({ success: false, message: 'Expense record not found.' });
+    }
+
+    await run('DELETE FROM expenses WHERE id = ?', [expenseId]);
+    logAuditAction(req.user.id, 'DELETE_EXPENSE', 'expenses', expenseId, old, null, req);
+
+    return res.json({ success: true, message: 'Expense record deleted successfully.' });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  run('DELETE FROM expenses WHERE id = ?', [expenseId]);
-  logAuditAction(req.user.id, 'DELETE_EXPENSE', 'expenses', expenseId, old, null, req);
-
-  return res.json({ success: true, message: 'Expense record deleted successfully.' });
 });
 
 export default router;

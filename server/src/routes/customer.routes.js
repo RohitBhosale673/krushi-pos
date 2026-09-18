@@ -7,73 +7,81 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // List / Search Customers
-router.get('/', requirePermission('customers', 'view'), (req, res) => {
-  const { search, village, taluka, customer_type } = req.query;
+router.get('/', requirePermission('customers', 'view'), async (req, res) => {
+  try {
+    const { search, village, taluka, customer_type } = req.query;
 
-  let sql = `
-    SELECT c.*,
-           (SELECT COUNT(*) FROM sales WHERE customer_id = c.id) AS total_sales_count
-    FROM customers c
-    WHERE 1=1
-  `;
-  const params = [];
+    let sql = `
+      SELECT c.*,
+             (SELECT COUNT(*) FROM sales WHERE customer_id = c.id) AS total_sales_count
+      FROM customers c
+      WHERE 1=1
+    `;
+    const params = [];
 
-  if (search) {
-    sql += ` AND (c.name LIKE ? OR c.mobile LIKE ? OR c.village LIKE ?)`;
-    const term = `%${search}%`;
-    params.push(term, term, term);
+    if (search) {
+      sql += ` AND (c.name LIKE ? OR c.mobile LIKE ? OR c.village LIKE ?)`;
+      const term = `%${search}%`;
+      params.push(term, term, term);
+    }
+
+    if (village) {
+      sql += ` AND c.village = ?`;
+      params.push(village);
+    }
+
+    if (taluka) {
+      sql += ` AND c.taluka = ?`;
+      params.push(taluka);
+    }
+
+    if (customer_type) {
+      sql += ` AND c.customer_type = ?`;
+      params.push(customer_type);
+    }
+
+    sql += ` ORDER BY c.name ASC`;
+
+    const customers = await queryAll(sql, params);
+    return res.json({ success: true, customers });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  if (village) {
-    sql += ` AND c.village = ?`;
-    params.push(village);
-  }
-
-  if (taluka) {
-    sql += ` AND c.taluka = ?`;
-    params.push(taluka);
-  }
-
-  if (customer_type) {
-    sql += ` AND c.customer_type = ?`;
-    params.push(customer_type);
-  }
-
-  sql += ` ORDER BY c.name ASC`;
-
-  const customers = queryAll(sql, params);
-  return res.json({ success: true, customers });
 });
 
 // Single Customer Details + Ledger History
-router.get('/:id', requirePermission('customers', 'view'), (req, res) => {
-  const custId = req.params.id;
-  const customer = queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
+router.get('/:id', requirePermission('customers', 'view'), async (req, res) => {
+  try {
+    const custId = req.params.id;
+    const customer = await queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
 
-  if (!customer) {
-    return res.status(404).json({ success: false, message: 'Customer not found.' });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found.' });
+    }
+
+    const transactions = await queryAll(`
+      SELECT ct.*, u.username AS user_name
+      FROM customer_transactions ct
+      LEFT JOIN users u ON ct.user_id = u.id
+      WHERE ct.customer_id = ?
+      ORDER BY ct.created_at DESC
+    `, [custId]);
+
+    const sales = await queryAll(`
+      SELECT id, invoice_no, sale_date, grand_total, paid_amount, due_amount, payment_status
+      FROM sales
+      WHERE customer_id = ?
+      ORDER BY sale_date DESC LIMIT 20
+    `, [custId]);
+
+    return res.json({ success: true, customer, transactions, sales });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  const transactions = queryAll(`
-    SELECT ct.*, u.username AS user_name
-    FROM customer_transactions ct
-    LEFT JOIN users u ON ct.user_id = u.id
-    WHERE ct.customer_id = ?
-    ORDER BY ct.created_at DESC
-  `, [custId]);
-
-  const sales = queryAll(`
-    SELECT id, invoice_no, sale_date, grand_total, paid_amount, due_amount, payment_status
-    FROM sales
-    WHERE customer_id = ?
-    ORDER BY sale_date DESC LIMIT 20
-  `, [custId]);
-
-  return res.json({ success: true, customer, transactions, sales });
 });
 
 // Create Customer
-router.post('/', requirePermission('customers', 'manage'), (req, res) => {
+router.post('/', requirePermission('customers', 'manage'), async (req, res) => {
   const {
     name, mobile, alt_mobile, address, village, taluka, district, state,
     gstin, customer_type, opening_balance, credit_limit, notes
@@ -83,16 +91,16 @@ router.post('/', requirePermission('customers', 'manage'), (req, res) => {
     return res.status(400).json({ success: false, message: 'Customer Name and Mobile Number are required.' });
   }
 
-  const existing = queryOne('SELECT id FROM customers WHERE mobile = ?', [mobile]);
-  if (existing) {
-    return res.status(400).json({ success: false, message: 'Customer with this mobile number already exists.' });
-  }
-
   try {
+    const existing = await queryOne('SELECT id FROM customers WHERE mobile = ?', [mobile]);
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'Customer with this mobile number already exists.' });
+    }
+
     let newCustId;
-    transaction(() => {
+    await transaction(async () => {
       const openBal = parseFloat(opening_balance) || 0;
-      const resCust = run(`
+      const resCust = await run(`
         INSERT INTO customers (
           name, mobile, alt_mobile, address, village, taluka, district, state,
           gstin, customer_type, opening_balance, current_balance, credit_limit, notes
@@ -106,7 +114,7 @@ router.post('/', requirePermission('customers', 'manage'), (req, res) => {
       newCustId = resCust.lastInsertRowid;
 
       if (openBal > 0) {
-        run(`
+        await run(`
           INSERT INTO customer_transactions (customer_id, txn_type, amount, balance_after, payment_method, notes, user_id)
           VALUES (?, 'SALE', ?, ?, 'Credit', 'Opening udhari balance', ?)
         `, [newCustId, openBal, openBal, req.user.id]);
@@ -122,21 +130,21 @@ router.post('/', requirePermission('customers', 'manage'), (req, res) => {
 });
 
 // Update Customer
-router.put('/:id', requirePermission('customers', 'manage'), (req, res) => {
+router.put('/:id', requirePermission('customers', 'manage'), async (req, res) => {
   const custId = req.params.id;
-  const oldCust = queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
-
-  if (!oldCust) {
-    return res.status(404).json({ success: false, message: 'Customer not found.' });
-  }
-
-  const {
-    name, mobile, alt_mobile, address, village, taluka, district, state,
-    gstin, customer_type, credit_limit, notes, is_active
-  } = req.body;
-
   try {
-    run(`
+    const oldCust = await queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
+
+    if (!oldCust) {
+      return res.status(404).json({ success: false, message: 'Customer not found.' });
+    }
+
+    const {
+      name, mobile, alt_mobile, address, village, taluka, district, state,
+      gstin, customer_type, credit_limit, notes, is_active
+    } = req.body;
+
+    await run(`
       UPDATE customers SET
         name = COALESCE(?, name),
         mobile = COALESCE(?, mobile),

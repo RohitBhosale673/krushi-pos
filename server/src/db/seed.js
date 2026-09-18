@@ -1,14 +1,14 @@
 import bcrypt from 'bcryptjs';
-import { getDb, transaction } from './connection.js';
+import { getDb, transaction, run, queryOne, queryAll } from './connection.js';
 import { initSchema } from './schema.js';
 
-export function seedDatabase() {
+export async function seedDatabase() {
   const db = getDb();
-  initSchema(db);
+  await initSchema(db);
 
   console.log('Seeding database with KrushiPOS agricultural data...');
 
-  transaction(() => {
+  await transaction(async () => {
     // Clear tables in reverse foreign key order for clean idempotent seeding
     const tablesToClear = [
       'sms_logs', 'audit_logs', 'expenses', 'purchase_return_items', 'purchase_returns',
@@ -19,11 +19,12 @@ export function seedDatabase() {
     ];
 
     for (const table of tablesToClear) {
-      db.exec(`DELETE FROM ${table};`);
+      await run(`DELETE FROM ${table};`);
     }
 
-    // Reset sqlite_sequence
-    db.exec(`DELETE FROM sqlite_sequence;`);
+    try {
+      await run(`DELETE FROM sqlite_sequence;`);
+    } catch (_) {}
 
     // 1. Roles & Permissions
     const roles = [
@@ -34,9 +35,8 @@ export function seedDatabase() {
       { name: 'Accountant', description: 'Udhari collection, expenses, reports, supplier payables', is_system: 1 }
     ];
 
-    const insertRole = db.prepare('INSERT INTO roles (name, description, is_system) VALUES (?, ?, ?)');
     for (const role of roles) {
-      insertRole.run(role.name, role.description, role.is_system);
+      await run('INSERT INTO roles (name, description, is_system) VALUES (?, ?, ?)', [role.name, role.description, role.is_system]);
     }
 
     const permissions = [
@@ -83,18 +83,16 @@ export function seedDatabase() {
       { module: 'audit', action: 'view', description: 'View system security audit logs' }
     ];
 
-    const insertPerm = db.prepare('INSERT INTO permissions (module, action, description) VALUES (?, ?, ?)');
     for (const perm of permissions) {
-      insertPerm.run(perm.module, perm.action, perm.description);
+      await run('INSERT INTO permissions (module, action, description) VALUES (?, ?, ?)', [perm.module, perm.action, perm.description]);
     }
 
     // Assign all permissions to Super Admin
-    const adminRole = db.prepare('SELECT id FROM roles WHERE name = ?').get('Super Admin');
-    const allPerms = db.prepare('SELECT id FROM permissions').all();
-    const insertRolePerm = db.prepare('INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)');
+    const adminRole = await queryOne('SELECT id FROM roles WHERE name = ?', ['Super Admin']);
+    const allPerms = await queryAll('SELECT id FROM permissions');
     if (adminRole) {
       for (const p of allPerms) {
-        insertRolePerm.run(adminRole.id, p.id);
+        await run('INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [adminRole.id, p.id]);
       }
     }
 
@@ -105,34 +103,47 @@ export function seedDatabase() {
     const invHash = bcrypt.hashSync('inventory123', 10);
     const accHash = bcrypt.hashSync('accountant123', 10);
 
-    const insertUser = db.prepare(`
+    const insertUserSQL = `
       INSERT INTO users (username, password_hash, full_name, mobile, email, status)
       VALUES (?, ?, ?, ?, ?, 'active')
-    `);
+    `;
 
-    insertUser.run('admin', passwordHash, 'Super Admin', '9876543210', 'admin@krushi.com');
-    insertUser.run('manager', managerHash, 'Ramesh Patil (Manager)', '9876543211', 'manager@krushi.com');
-    insertUser.run('cashier', cashierHash, 'Suresh Kumar (Cashier)', '9876543212', 'cashier@krushi.com');
-    insertUser.run('inventory', invHash, 'Vikas Shinde (Inventory)', '9876543213', 'inventory@krushi.com');
-    insertUser.run('accountant', accHash, 'Anil Deshmukh (Accountant)', '9876543214', 'accountant@krushi.com');
+    await run(insertUserSQL, ['admin', passwordHash, 'Super Admin', '9876543210', 'admin@krushi.com']);
+    await run(insertUserSQL, ['manager', managerHash, 'Ramesh Patil (Manager)', '9876543211', 'manager@krushi.com']);
+    await run(insertUserSQL, ['cashier', cashierHash, 'Suresh Kumar (Cashier)', '9876543212', 'cashier@krushi.com']);
+    await run(insertUserSQL, ['inventory', invHash, 'Vikas Shinde (Inventory)', '9876543213', 'inventory@krushi.com']);
+    await run(insertUserSQL, ['accountant', accHash, 'Anil Deshmukh (Accountant)', '9876543214', 'accountant@krushi.com']);
 
     // Assign Roles to Users
-    const insertUserRole = db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)');
-    const getUser = (uname) => db.prepare('SELECT id FROM users WHERE username = ?').get(uname);
-    const getRole = (rname) => db.prepare('SELECT id FROM roles WHERE name = ?').get(rname);
+    const getUser = async (uname) => await queryOne('SELECT id FROM users WHERE username = ?', [uname]);
+    const getRole = async (rname) => await queryOne('SELECT id FROM roles WHERE name = ?', [rname]);
 
-    if (getUser('admin') && getRole('Super Admin')) insertUserRole.run(getUser('admin').id, getRole('Super Admin').id);
-    if (getUser('manager') && getRole('Manager')) insertUserRole.run(getUser('manager').id, getRole('Manager').id);
-    if (getUser('cashier') && getRole('Cashier')) insertUserRole.run(getUser('cashier').id, getRole('Cashier').id);
-    if (getUser('inventory') && getRole('Inventory Staff')) insertUserRole.run(getUser('inventory').id, getRole('Inventory Staff').id);
-    if (getUser('accountant') && getRole('Accountant')) insertUserRole.run(getUser('accountant').id, getRole('Accountant').id);
+    const adminU = await getUser('admin');
+    const superR = await getRole('Super Admin');
+    if (adminU && superR) await run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [adminU.id, superR.id]);
+
+    const mgrU = await getUser('manager');
+    const mgrR = await getRole('Manager');
+    if (mgrU && mgrR) await run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [mgrU.id, mgrR.id]);
+
+    const cshU = await getUser('cashier');
+    const cshR = await getRole('Cashier');
+    if (cshU && cshR) await run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [cshU.id, cshR.id]);
+
+    const invU = await getUser('inventory');
+    const invR = await getRole('Inventory Staff');
+    if (invU && invR) await run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [invU.id, invR.id]);
+
+    const accU = await getUser('accountant');
+    const accR = await getRole('Accountant');
+    if (accU && accR) await run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [accU.id, accR.id]);
 
     // Assign permissions for Cashier & Manager
-    const cashierRole = getRole('Cashier');
+    const cashierRole = await getRole('Cashier');
     if (cashierRole) {
-      const cashierPerms = db.prepare(`SELECT id FROM permissions WHERE module IN ('pos', 'customers')`).all();
+      const cashierPerms = await queryAll(`SELECT id FROM permissions WHERE module IN ('pos', 'customers')`);
       for (const cp of cashierPerms) {
-        insertRolePerm.run(cashierRole.id, cp.id);
+        await run('INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [cashierRole.id, cp.id]);
       }
     }
 
@@ -153,12 +164,11 @@ export function seedDatabase() {
       { key: 'sms_template_udhar', val: 'Dear {customer_name}, your outstanding balance at {store_name} is Rs.{outstanding_amount}. Kindly settle your due date: {due_date}. Contact: {store_phone}.', group: 'sms', desc: 'Udhar Reminder SMS Template' }
     ];
 
-    const insertSetting = db.prepare(`
-      INSERT INTO business_settings (setting_key, setting_value, setting_group, description)
-      VALUES (?, ?, ?, ?)
-    `);
     for (const s of defaultSettings) {
-      insertSetting.run(s.key, s.val, s.group, s.desc);
+      await run(`
+        INSERT INTO business_settings (setting_key, setting_value, setting_group, description)
+        VALUES (?, ?, ?, ?)
+      `, [s.key, s.val, s.group, s.desc]);
     }
 
     // 4. Units, Categories, Brands
@@ -174,8 +184,9 @@ export function seedDatabase() {
       { name: 'Box', symbol: 'Box', allow_decimal: 0 },
       { name: 'Piece', symbol: 'Pcs', allow_decimal: 0 }
     ];
-    const insertUnit = db.prepare('INSERT INTO units (name, symbol, allow_decimal) VALUES (?, ?, ?)');
-    for (const u of units) insertUnit.run(u.name, u.symbol, u.allow_decimal);
+    for (const u of units) {
+      await run('INSERT INTO units (name, symbol, allow_decimal) VALUES (?, ?, ?)', [u.name, u.symbol, u.allow_decimal]);
+    }
 
     const categories = [
       { name: 'Seeds', description: 'Certified hybrid and high yield crop seeds' },
@@ -187,8 +198,9 @@ export function seedDatabase() {
       { name: 'Plant Growth Promoters', description: 'Micronutrients and tonic' },
       { name: 'Agricultural Tools', description: 'Manual equipment, sprayers, blades' }
     ];
-    const insertCat = db.prepare('INSERT INTO categories (name, description) VALUES (?, ?)');
-    for (const c of categories) insertCat.run(c.name, c.description);
+    for (const c of categories) {
+      await run('INSERT INTO categories (name, description) VALUES (?, ?)', [c.name, c.description]);
+    }
 
     const brands = [
       { name: 'Syngenta India', contact_person: 'Anand Sharma', mobile: '9890111222' },
@@ -200,13 +212,14 @@ export function seedDatabase() {
       { name: 'Coromandel International', contact_person: 'Sunil Rao', mobile: '9890777888' },
       { name: 'Tata Rallis', contact_person: 'Nitin Kulkarni', mobile: '9890888999' }
     ];
-    const insertBrand = db.prepare('INSERT INTO brands (name, contact_person, mobile) VALUES (?, ?, ?)');
-    for (const b of brands) insertBrand.run(b.name, b.contact_person, b.mobile);
+    for (const b of brands) {
+      await run('INSERT INTO brands (name, contact_person, mobile) VALUES (?, ?, ?)', [b.name, b.contact_person, b.mobile]);
+    }
 
     // Helpers to get IDs
-    const getUnitId = (sym) => db.prepare('SELECT id FROM units WHERE symbol = ?').get(sym)?.id || 1;
-    const getCatId = (cname) => db.prepare('SELECT id FROM categories WHERE name = ?').get(cname)?.id || 1;
-    const getBrandId = (bname) => db.prepare('SELECT id FROM brands WHERE name = ?').get(bname)?.id || 1;
+    const getUnitId = async (sym) => (await queryOne('SELECT id FROM units WHERE symbol = ?', [sym]))?.id || 1;
+    const getCatId = async (cname) => (await queryOne('SELECT id FROM categories WHERE name = ?', [cname]))?.id || 1;
+    const getBrandId = async (bname) => (await queryOne('SELECT id FROM brands WHERE name = ?', [bname]))?.id || 1;
 
     // 5. Products Master
     const productsData = [
@@ -314,86 +327,84 @@ export function seedDatabase() {
       }
     ];
 
-    const insertProd = db.prepare(`
+    const insertProdSQL = `
       INSERT INTO products (
         name, product_code, sku, barcode, category_id, brand_id, product_type,
         primary_unit_id, purchase_price, selling_price, mrp, wholesale_price, retail_price,
         gst_rate, hsn_code, min_stock, max_stock, reorder_level
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
     for (const p of productsData) {
-      insertProd.run(
+      const catId = await getCatId(p.category);
+      const brandId = await getBrandId(p.brand);
+      const unitId = await getUnitId(p.unit);
+
+      await run(insertProdSQL, [
         p.name, p.product_code, p.sku, p.barcode,
-        getCatId(p.category), getBrandId(p.brand), p.product_type,
-        getUnitId(p.unit), p.purchase_price, p.selling_price, p.mrp,
+        catId, brandId, p.product_type,
+        unitId, p.purchase_price, p.selling_price, p.mrp,
         p.selling_price * 0.95, p.selling_price, p.gst_rate, p.hsn_code,
         p.min_stock, 1000, p.reorder_level
-      );
+      ]);
     }
 
     // 6. Product Batches & Stock Movements
-    const getProductId = (code) => db.prepare('SELECT id FROM products WHERE product_code = ?').get(code)?.id;
+    const getProductId = async (code) => (await queryOne('SELECT id FROM products WHERE product_code = ?', [code]))?.id;
 
     const batchesData = [
-      // Urea Batch 1 (Active)
       {
         prod_code: 'PRD-UREA-50', batch_no: 'B2026-UREA-01', mfg: '2026-01-10', exp: '2027-12-31',
         purch_rate: 242.00, sell_rate: 266.50, mrp: 266.50, qty_rec: 200, qty_sold: 45, status: 'Active'
       },
-      // Urea Batch 2 (Near Expiry)
       {
         prod_code: 'PRD-UREA-50', batch_no: 'B2025-UREA-99', mfg: '2024-10-01', exp: '2026-10-10',
         purch_rate: 235.00, sell_rate: 260.00, mrp: 266.50, qty_rec: 50, qty_sold: 40, status: 'Near Expiry'
       },
-      // DAP Batch (Active)
       {
         prod_code: 'PRD-DAP-50', batch_no: 'B2026-DAP-05', mfg: '2026-02-15', exp: '2028-02-15',
         purch_rate: 1250.00, sell_rate: 1350.00, mrp: 1350.00, qty_rec: 100, qty_sold: 25, status: 'Active'
       },
-      // Coragen Batch (Active)
       {
         prod_code: 'PRD-CORAGEN-150', batch_no: 'B2026-COR-11', mfg: '2026-03-01', exp: '2027-09-01',
         purch_rate: 1650.00, sell_rate: 1850.00, mrp: 1950.00, qty_rec: 40, qty_sold: 12, status: 'Active'
       },
-      // Coragen Expired Batch (Expired for testing block override feature)
       {
         prod_code: 'PRD-CORAGEN-150', batch_no: 'B2024-COR-02', mfg: '2024-01-01', exp: '2026-05-01',
         purch_rate: 1600.00, sell_rate: 1800.00, mrp: 1950.00, qty_rec: 15, qty_sold: 10, status: 'Expired'
       },
-      // Cotton Seed Batch (Active)
       {
         prod_code: 'PRD-COTTON-475', batch_no: 'B2026-SEED-88', mfg: '2026-01-01', exp: '2026-12-31',
         purch_rate: 750.00, sell_rate: 853.00, mrp: 853.00, qty_rec: 150, qty_sold: 60, status: 'Active'
       }
     ];
 
-    const insertBatch = db.prepare(`
+    const insertBatchSQL = `
       INSERT INTO product_batches (
         product_id, batch_no, mfg_date, exp_date, purchase_rate, selling_rate,
         mrp, qty_received, qty_sold, available_qty, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
-    const insertStockMove = db.prepare(`
+    const insertStockMoveSQL = `
       INSERT INTO stock_movements (
         product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
     for (const b of batchesData) {
-      const pId = getProductId(b.prod_code);
+      const pId = await getProductId(b.prod_code);
       if (!pId) continue;
 
       const avail = b.qty_rec - b.qty_sold;
-      const res = insertBatch.run(
+      const res = await run(insertBatchSQL, [
         pId, b.batch_no, b.mfg, b.exp, b.purch_rate, b.sell_rate, b.mrp,
         b.qty_rec, b.qty_sold, avail, b.status
-      );
+      ]);
 
       const batchId = res.lastInsertRowid;
       if (batchId) {
-        insertStockMove.run(pId, batchId, 'opening_stock', avail, 0, avail, 'Initial seed inventory');
+        await run(insertStockMoveSQL, [pId, batchId, 'opening_stock', avail, 0, avail, 'Initial seed inventory']);
       }
     }
 
@@ -417,23 +428,23 @@ export function seedDatabase() {
       }
     ];
 
-    const insertCust = db.prepare(`
+    const insertCustSQL = `
       INSERT INTO customers (
         name, mobile, village, taluka, district, customer_type, opening_balance, current_balance, credit_limit
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
-    const insertCustTxn = db.prepare(`
+    const insertCustTxnSQL = `
       INSERT INTO customer_transactions (
         customer_id, txn_type, amount, balance_after, payment_method, notes
       ) VALUES (?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
     for (const c of customersData) {
-      const res = insertCust.run(c.name, c.mobile, c.village, c.taluka, c.district, c.type, c.open_bal, c.cur_bal, c.credit_lim);
+      const res = await run(insertCustSQL, [c.name, c.mobile, c.village, c.taluka, c.district, c.type, c.open_bal, c.cur_bal, c.credit_lim]);
       const custId = res.lastInsertRowid;
       if (custId && c.open_bal > 0) {
-        insertCustTxn.run(custId, 'SALE', c.open_bal, c.open_bal, 'Credit', 'Opening udhari balance record');
+        await run(insertCustTxnSQL, [custId, 'SALE', c.open_bal, c.open_bal, 'Credit', 'Opening udhari balance record']);
       }
     }
 
@@ -449,43 +460,46 @@ export function seedDatabase() {
       }
     ];
 
-    const insertSupp = db.prepare(`
+    const insertSuppSQL = `
       INSERT INTO suppliers (
         name, company_name, mobile, gstin, opening_balance, current_balance, credit_limit
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
     for (const s of suppliersData) {
-      insertSupp.run(s.name, s.company_name, s.mobile, s.gstin, s.open_bal, s.cur_bal, s.credit_lim);
+      await run(insertSuppSQL, [s.name, s.company_name, s.mobile, s.gstin, s.open_bal, s.cur_bal, s.credit_lim]);
     }
 
     // 9. Sample Sales Invoices
-    const cust1 = db.prepare('SELECT id FROM customers WHERE mobile=?').get('9822112233')?.id;
-    const adminUser = getUser('admin');
+    const cust1 = (await queryOne('SELECT id FROM customers WHERE mobile=?', ['9822112233']))?.id;
+    const adminUser = await getUser('admin');
     
     if (cust1 && adminUser) {
-      const insertSale = db.prepare(`
+      const insertSaleSQL = `
         INSERT INTO sales (
           invoice_no, customer_id, cashier_id, total_taxable, total_tax, grand_total, paid_amount, due_amount, payment_status, sale_type
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      `;
       
-      insertSale.run('KSK/2026/001', cust1, adminUser.id, 5000.00, 250.00, 5250.00, 2500.00, 2750.00, 'PARTIAL', 'CREDIT');
+      await run(insertSaleSQL, ['KSK/2026/001', cust1, adminUser.id, 5000.00, 250.00, 5250.00, 2500.00, 2750.00, 'PARTIAL', 'CREDIT']);
     }
 
     // 10. Sample Expenses
-    const insertExp = db.prepare(`
+    const insertExpSQL = `
       INSERT INTO expenses (category, title, amount, expense_date, payment_method, description, user_id)
       VALUES (?, ?, ?, DATE('now'), ?, ?, ?)
-    `);
+    `;
 
-    insertExp.run('Electricity', 'Shop Electricity Bill Sept 2026', 2450.00, 'UPI', 'MSEDCL Monthly Bill', adminUser?.id || 1);
-    insertExp.run('Transport', 'Seed Transport from Godown', 1200.00, 'Cash', 'Tempo freight charges', adminUser?.id || 1);
+    await run(insertExpSQL, ['Electricity', 'Shop Electricity Bill Sept 2026', 2450.00, 'UPI', 'MSEDCL Monthly Bill', adminUser?.id || 1]);
+    await run(insertExpSQL, ['Transport', 'Seed Transport from Godown', 1200.00, 'Cash', 'Tempo freight charges', adminUser?.id || 1]);
 
     console.log('Database seeding completed successfully!');
   });
 }
 
 if (process.argv[1]?.endsWith('seed.js')) {
-  seedDatabase();
+  seedDatabase().catch(err => {
+    console.error('Seed error:', err);
+    process.exit(1);
+  });
 }

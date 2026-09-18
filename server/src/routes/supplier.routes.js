@@ -7,53 +7,61 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // List Suppliers
-router.get('/', requirePermission('suppliers', 'view'), (req, res) => {
-  const { search } = req.query;
+router.get('/', requirePermission('suppliers', 'view'), async (req, res) => {
+  try {
+    const { search } = req.query;
 
-  let sql = `SELECT * FROM suppliers WHERE 1=1`;
-  const params = [];
+    let sql = `SELECT * FROM suppliers WHERE 1=1`;
+    const params = [];
 
-  if (search) {
-    sql += ` AND (name LIKE ? OR company_name LIKE ? OR mobile LIKE ? OR gstin LIKE ?)`;
-    const term = `%${search}%`;
-    params.push(term, term, term, term);
+    if (search) {
+      sql += ` AND (name LIKE ? OR company_name LIKE ? OR mobile LIKE ? OR gstin LIKE ?)`;
+      const term = `%${search}%`;
+      params.push(term, term, term, term);
+    }
+
+    sql += ` ORDER BY company_name ASC`;
+
+    const suppliers = await queryAll(sql, params);
+    return res.json({ success: true, suppliers });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  sql += ` ORDER BY company_name ASC`;
-
-  const suppliers = queryAll(sql, params);
-  return res.json({ success: true, suppliers });
 });
 
 // Single Supplier Details + Ledger
-router.get('/:id', requirePermission('suppliers', 'view'), (req, res) => {
-  const suppId = req.params.id;
-  const supplier = queryOne('SELECT * FROM suppliers WHERE id = ?', [suppId]);
+router.get('/:id', requirePermission('suppliers', 'view'), async (req, res) => {
+  try {
+    const suppId = req.params.id;
+    const supplier = await queryOne('SELECT * FROM suppliers WHERE id = ?', [suppId]);
 
-  if (!supplier) {
-    return res.status(404).json({ success: false, message: 'Supplier not found.' });
+    if (!supplier) {
+      return res.status(404).json({ success: false, message: 'Supplier not found.' });
+    }
+
+    const transactions = await queryAll(`
+      SELECT st.*, u.username AS user_name
+      FROM supplier_transactions st
+      LEFT JOIN users u ON st.user_id = u.id
+      WHERE st.supplier_id = ?
+      ORDER BY st.created_at DESC
+    `, [suppId]);
+
+    const purchases = await queryAll(`
+      SELECT id, invoice_no, purchase_date, grand_total, paid_amount, due_amount, payment_status
+      FROM purchases
+      WHERE supplier_id = ?
+      ORDER BY purchase_date DESC LIMIT 20
+    `, [suppId]);
+
+    return res.json({ success: true, supplier, transactions, purchases });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  const transactions = queryAll(`
-    SELECT st.*, u.username AS user_name
-    FROM supplier_transactions st
-    LEFT JOIN users u ON st.user_id = u.id
-    WHERE st.supplier_id = ?
-    ORDER BY st.created_at DESC
-  `, [suppId]);
-
-  const purchases = queryAll(`
-    SELECT id, invoice_no, purchase_date, grand_total, paid_amount, due_amount, payment_status
-    FROM purchases
-    WHERE supplier_id = ?
-    ORDER BY purchase_date DESC LIMIT 20
-  `, [suppId]);
-
-  return res.json({ success: true, supplier, transactions, purchases });
 });
 
 // Create Supplier
-router.post('/', requirePermission('suppliers', 'manage'), (req, res) => {
+router.post('/', requirePermission('suppliers', 'manage'), async (req, res) => {
   const {
     name, company_name, mobile, alt_mobile, email, address, gstin, state,
     opening_balance, credit_limit, payment_terms, notes
@@ -65,9 +73,9 @@ router.post('/', requirePermission('suppliers', 'manage'), (req, res) => {
 
   try {
     let newSuppId;
-    transaction(() => {
+    await transaction(async () => {
       const openBal = parseFloat(opening_balance) || 0;
-      const resSupp = run(`
+      const resSupp = await run(`
         INSERT INTO suppliers (
           name, company_name, mobile, alt_mobile, email, address, gstin, state,
           opening_balance, current_balance, credit_limit, payment_terms, notes
@@ -81,7 +89,7 @@ router.post('/', requirePermission('suppliers', 'manage'), (req, res) => {
       newSuppId = resSupp.lastInsertRowid;
 
       if (openBal > 0) {
-        run(`
+        await run(`
           INSERT INTO supplier_transactions (supplier_id, txn_type, amount, balance_after, payment_method, notes, user_id)
           VALUES (?, 'PURCHASE', ?, ?, 'Credit Note', 'Opening payable balance', ?)
         `, [newSuppId, openBal, openBal, req.user.id]);
@@ -97,27 +105,27 @@ router.post('/', requirePermission('suppliers', 'manage'), (req, res) => {
 });
 
 // Record Supplier Payment
-router.post('/:id/pay', requirePermission('suppliers', 'manage'), (req, res) => {
+router.post('/:id/pay', requirePermission('suppliers', 'manage'), async (req, res) => {
   const suppId = req.params.id;
   const { amount, payment_method, notes } = req.body;
 
-  const supplier = queryOne('SELECT * FROM suppliers WHERE id = ?', [suppId]);
-  if (!supplier) {
-    return res.status(404).json({ success: false, message: 'Supplier not found.' });
-  }
-
-  const payAmount = parseFloat(amount);
-  if (!payAmount || payAmount <= 0) {
-    return res.status(400).json({ success: false, message: 'Valid positive payment amount is required.' });
-  }
-
   try {
-    let newBalance;
-    transaction(() => {
-      newBalance = supplier.current_balance - payAmount;
-      run('UPDATE suppliers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newBalance, suppId]);
+    const supplier = await queryOne('SELECT * FROM suppliers WHERE id = ?', [suppId]);
+    if (!supplier) {
+      return res.status(404).json({ success: false, message: 'Supplier not found.' });
+    }
 
-      run(`
+    const payAmount = parseFloat(amount);
+    if (!payAmount || payAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid positive payment amount is required.' });
+    }
+
+    let newBalance;
+    await transaction(async () => {
+      newBalance = supplier.current_balance - payAmount;
+      await run('UPDATE suppliers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newBalance, suppId]);
+
+      await run(`
         INSERT INTO supplier_transactions (supplier_id, txn_type, amount, balance_after, payment_method, notes, user_id)
         VALUES (?, 'PAYMENT', ?, ?, ?, ?, ?)
       `, [suppId, payAmount, newBalance, payment_method || 'Cash', notes || 'Supplier payment', req.user.id]);

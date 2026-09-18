@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
-import { getDb } from './db/connection.js';
+import { getDb, queryOne } from './db/connection.js';
 import { initSchema } from './db/schema.js';
 import { seedDatabase } from './db/seed.js';
 
@@ -35,18 +35,46 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize Database & Schema
-const db = getDb();
-initSchema(db);
+let isInitialized = false;
+let initPromise = null;
 
-// Auto-seed if database is empty
-const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get()?.count || 0;
-if (userCount === 0) {
-  console.log('Database empty. Initializing seed data...');
-  seedDatabase();
+export async function initApp() {
+  if (isInitialized) return;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    const db = getDb();
+    await initSchema(db);
+
+    try {
+      const userCountRow = await queryOne('SELECT COUNT(*) AS count FROM users');
+      const userCount = userCountRow?.count || 0;
+      if (userCount === 0) {
+        console.log('Database empty. Initializing seed data...');
+        await seedDatabase();
+      }
+    } catch (e) {
+      console.warn('Auto-seed check note:', e.message);
+    }
+    isInitialized = true;
+  })();
+
+  return initPromise;
 }
 
-// Middleware
+// Middleware to ensure DB schema is ready
+app.use(async (req, res, next) => {
+  if (!isInitialized) {
+    try {
+      await initApp();
+    } catch (err) {
+      return res.status(500).json({ success: false, message: 'Database initialization failed: ' + err.message });
+    }
+  }
+  next();
+});
+
+// Standard Middleware
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
@@ -114,11 +142,16 @@ export { app };
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
 let server;
 if (isMain) {
-  server = app.listen(PORT, () => {
-    console.log(`=================================================`);
-    console.log(`  KrushiPOS Backend API Server active on port ${PORT}`);
-    console.log(`  Health check: http://localhost:${PORT}/api/health`);
-    console.log(`=================================================`);
+  initApp().then(() => {
+    server = app.listen(PORT, () => {
+      console.log(`=================================================`);
+      console.log(`  KrushiPOS Backend API Server active on port ${PORT}`);
+      console.log(`  Health check: http://localhost:${PORT}/api/health`);
+      console.log(`=================================================`);
+    });
+  }).catch(err => {
+    console.error('Database initialization error:', err);
+    process.exit(1);
   });
 }
 

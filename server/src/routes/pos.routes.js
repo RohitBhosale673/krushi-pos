@@ -7,62 +7,66 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // POS Search & Filter Endpoint: Barcode, SKU, Code, Name, Batch Number, Category, Product Type
-router.get('/search', requirePermission('pos', 'create'), (req, res) => {
-  const { q, category_id, product_type } = req.query;
+router.get('/search', requirePermission('pos', 'create'), async (req, res) => {
+  try {
+    const { q, category_id, product_type } = req.query;
 
-  let sql = `
-    SELECT pb.id AS batch_id, pb.batch_no, pb.exp_date, pb.mfg_date,
-           COALESCE(NULLIF(pb.purchase_rate, 0), p.purchase_price, 0) AS purchase_rate,
-           COALESCE(NULLIF(pb.selling_rate, 0), p.selling_price, 0) AS selling_rate,
-           COALESCE(NULLIF(pb.mrp, 0), p.mrp, p.selling_price, 0) AS mrp,
-           pb.available_qty, pb.status AS batch_status,
-           p.id AS product_id, p.name AS product_name, p.product_code, p.sku, p.barcode,
-           p.gst_rate, p.hsn_code, p.product_type, p.category_id,
-           u.symbol AS unit_symbol, u.allow_decimal,
-           CAST((JULIANDAY(pb.exp_date) - JULIANDAY('now')) AS INTEGER) AS days_until_expiry
-    FROM product_batches pb
-    JOIN products p ON pb.product_id = p.id
-    LEFT JOIN units u ON p.primary_unit_id = u.id
-    WHERE pb.available_qty > 0 AND pb.status != 'Blocked'
-  `;
+    let sql = `
+      SELECT pb.id AS batch_id, pb.batch_no, pb.exp_date, pb.mfg_date,
+             COALESCE(NULLIF(pb.purchase_rate, 0), p.purchase_price, 0) AS purchase_rate,
+             COALESCE(NULLIF(pb.selling_rate, 0), p.selling_price, 0) AS selling_rate,
+             COALESCE(NULLIF(pb.mrp, 0), p.mrp, p.selling_price, 0) AS mrp,
+             pb.available_qty, pb.status AS batch_status,
+             p.id AS product_id, p.name AS product_name, p.product_code, p.sku, p.barcode,
+             p.gst_rate, p.hsn_code, p.product_type, p.category_id,
+             u.symbol AS unit_symbol, u.allow_decimal,
+             CAST((JULIANDAY(pb.exp_date) - JULIANDAY('now')) AS INTEGER) AS days_until_expiry
+      FROM product_batches pb
+      JOIN products p ON pb.product_id = p.id
+      LEFT JOIN units u ON p.primary_unit_id = u.id
+      WHERE pb.available_qty > 0 AND pb.status != 'Blocked'
+    `;
 
-  const params = [];
+    const params = [];
 
-  if (q && q.trim() !== '') {
-    const term = `%${q.trim()}%`;
-    const exact = q.trim();
-    sql += ` AND (p.barcode = ? OR p.sku = ? OR p.product_code = ? OR pb.batch_no = ? OR p.name LIKE ? OR p.barcode LIKE ?)`;
-    params.push(exact, exact, exact, exact, term, term);
+    if (q && q.trim() !== '') {
+      const term = `%${q.trim()}%`;
+      const exact = q.trim();
+      sql += ` AND (p.barcode = ? OR p.sku = ? OR p.product_code = ? OR pb.batch_no = ? OR p.name LIKE ? OR p.barcode LIKE ?)`;
+      params.push(exact, exact, exact, exact, term, term);
+    }
+
+    if (category_id && String(category_id).trim() !== '') {
+      sql += ` AND p.category_id = ?`;
+      params.push(category_id);
+    }
+
+    if (product_type && String(product_type).trim() !== '' && product_type !== 'All Items' && product_type !== 'all') {
+      const raw = String(product_type).trim();
+      const singular = raw.endsWith('s') ? raw.slice(0, -1) : raw;
+      const plural = raw.endsWith('s') ? raw : `${raw}s`;
+
+      sql += ` AND (p.product_type = ? OR p.product_type = ? OR p.product_type = ? OR p.category_id IN (SELECT id FROM categories WHERE name LIKE ?))`;
+      params.push(raw, singular, plural, `%${singular}%`);
+    }
+
+    if (q && q.trim() !== '') {
+      const exact = q.trim();
+      sql += ` ORDER BY (p.barcode = ? OR p.sku = ? OR p.product_code = ?) DESC, pb.exp_date ASC LIMIT 50`;
+      params.push(exact, exact, exact);
+    } else {
+      sql += ` ORDER BY p.name ASC, pb.exp_date ASC LIMIT 60`;
+    }
+
+    const items = await queryAll(sql, params);
+    return res.json({ success: true, items });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  if (category_id && String(category_id).trim() !== '') {
-    sql += ` AND p.category_id = ?`;
-    params.push(category_id);
-  }
-
-  if (product_type && String(product_type).trim() !== '' && product_type !== 'All Items' && product_type !== 'all') {
-    const raw = String(product_type).trim();
-    const singular = raw.endsWith('s') ? raw.slice(0, -1) : raw;
-    const plural = raw.endsWith('s') ? raw : `${raw}s`;
-
-    sql += ` AND (p.product_type = ? OR p.product_type = ? OR p.product_type = ? OR p.category_id IN (SELECT id FROM categories WHERE name LIKE ?))`;
-    params.push(raw, singular, plural, `%${singular}%`);
-  }
-
-  if (q && q.trim() !== '') {
-    const exact = q.trim();
-    sql += ` ORDER BY (p.barcode = ? OR p.sku = ? OR p.product_code = ?) DESC, pb.exp_date ASC LIMIT 50`;
-    params.push(exact, exact, exact);
-  } else {
-    sql += ` ORDER BY p.name ASC, pb.exp_date ASC LIMIT 60`;
-  }
-
-  const items = queryAll(sql, params);
-  return res.json({ success: true, items });
 });
 
 // Process POS Sale Bill
-router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
+router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
   const {
     customer_id, items, payments, bill_discount = 0, round_off = 0,
     override_expiry = false, notes
@@ -83,7 +87,7 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
     let totalTaxable = 0;
     let totalTax = 0;
 
-    transaction(() => {
+    await transaction(async () => {
       const today = new Date().toISOString().split('T')[0];
 
       // 1. Validate items & stock
@@ -91,7 +95,7 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
       let totalItemSubtotal = 0;
 
       for (const item of items) {
-        const batch = queryOne(`
+        const batch = await queryOne(`
           SELECT pb.*, p.name AS product_name, p.gst_rate, p.primary_unit_id, u.symbol AS unit_symbol
           FROM product_batches pb
           JOIN products p ON pb.product_id = p.id
@@ -170,7 +174,7 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
           throw new Error('Customer selection is required for Credit / Udhar sales.');
         }
 
-        cust = queryOne('SELECT * FROM customers WHERE id = ?', [customer_id]);
+        cust = await queryOne('SELECT * FROM customers WHERE id = ?', [customer_id]);
         if (!cust) {
           throw new Error('Selected customer not found.');
         }
@@ -182,9 +186,10 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
       }
 
       // Generate invoice number
-      const prefixSetting = queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'invoice_prefix'")?.setting_value || 'KSK/';
-      const maxIdRow = queryOne('SELECT COALESCE(MAX(id), 0) + 1 AS next_seq FROM sales');
-      const nextSeq = String(maxIdRow.next_seq).padStart(4, '0');
+      const prefixRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'invoice_prefix'");
+      const prefixSetting = prefixRow?.setting_value || 'KSK/';
+      const maxIdRow = await queryOne('SELECT COALESCE(MAX(id), 0) + 1 AS next_seq FROM sales');
+      const nextSeq = String(maxIdRow?.next_seq || 1).padStart(4, '0');
       const yearStr = new Date().getFullYear();
       newInvoiceNo = `${prefixSetting}${yearStr}/${nextSeq}`;
 
@@ -197,7 +202,7 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
       }
 
       // 4. Insert Sale Record
-      const resSale = run(`
+      const resSale = await run(`
         INSERT INTO sales (
           invoice_no, customer_id, cashier_id, total_taxable, total_tax, total_discount,
           round_off, grand_total, paid_amount, due_amount, payment_status, sale_type, notes
@@ -212,7 +217,7 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
 
       // 5. Insert Sale Items & Deduct Stock
       for (const item of processedItems) {
-        run(`
+        await run(`
           INSERT INTO sale_items (
             sale_id, product_id, batch_id, qty, unit, unit_price, mrp,
             discount_percent, discount_amount, gst_rate, taxable_amount,
@@ -225,28 +230,28 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
         ]);
 
         // Update Batch Available Qty & Sold Qty
-        const batch = queryOne('SELECT available_qty, qty_sold, status FROM product_batches WHERE id = ?', [item.batch_id]);
-        const newAvail = batch.available_qty - item.qty;
-        const newSold = batch.qty_sold + item.qty;
-        const newStatus = newAvail === 0 ? 'Out of Stock' : batch.status;
+        const bRow = await queryOne('SELECT available_qty, qty_sold, status FROM product_batches WHERE id = ?', [item.batch_id]);
+        const newAvail = bRow.available_qty - item.qty;
+        const newSold = bRow.qty_sold + item.qty;
+        const newStatus = newAvail === 0 ? 'Out of Stock' : bRow.status;
 
-        run(`
+        await run(`
           UPDATE product_batches 
           SET available_qty = ?, qty_sold = ?, status = ?, updated_at = CURRENT_TIMESTAMP 
           WHERE id = ?
         `, [newAvail, newSold, newStatus, item.batch_id]);
 
         // Record stock movement
-        run(`
+        await run(`
           INSERT INTO stock_movements (
             product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, reference_type, reference_id, notes, user_id
           ) VALUES (?, ?, 'sale', ?, ?, ?, 'sale', ?, 'POS Bill Sale', ?)
-        `, [item.product_id, item.batch_id, -item.qty, batch.available_qty, newAvail, newInvoiceNo, req.user.id]);
+        `, [item.product_id, item.batch_id, -item.qty, bRow.available_qty, newAvail, newInvoiceNo, req.user.id]);
       }
 
       // 6. Record Split Payments
       for (const p of payments) {
-        run(`
+        await run(`
           INSERT INTO sale_payments (sale_id, payment_method, amount, txn_ref, notes)
           VALUES (?, ?, ?, ?, ?)
         `, [saleId, p.payment_method, p.amount, p.txn_ref || null, p.notes || null]);
@@ -256,9 +261,9 @@ router.post('/sale', requirePermission('pos', 'create'), (req, res) => {
       const totalCreditDue = udharAmount > 0 ? udharAmount : dueAmount;
       if (customer_id && totalCreditDue > 0) {
         const newBal = cust.current_balance + totalCreditDue;
-        run('UPDATE customers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newBal, customer_id]);
+        await run('UPDATE customers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newBal, customer_id]);
 
-        run(`
+        await run(`
           INSERT INTO customer_transactions (customer_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id)
           VALUES (?, 'SALE', ?, ?, 'Credit', 'sale', ?, ?, ?)
         `, [customer_id, totalCreditDue, newBal, newInvoiceNo, `Credit sale ${newInvoiceNo}`, req.user.id]);
@@ -311,36 +316,40 @@ router.delete('/held/:id', requirePermission('pos', 'hold'), (req, res) => {
 });
 
 // Reprint / View Past Invoices
-router.get('/invoice/:invoice_no', requirePermission('pos', 'reprint'), (req, res) => {
-  const invoiceNo = req.params.invoice_no;
+router.get('/invoice/:invoice_no', requirePermission('pos', 'reprint'), async (req, res) => {
+  try {
+    const invoiceNo = req.params.invoice_no;
 
-  const sale = queryOne(`
-    SELECT s.*, c.name AS customer_name, c.mobile AS customer_mobile, c.address AS customer_address, c.village AS customer_village, c.current_balance AS customer_current_balance,
-           u.full_name AS cashier_name
-    FROM sales s
-    LEFT JOIN customers c ON s.customer_id = c.id
-    LEFT JOIN users u ON s.cashier_id = u.id
-    WHERE s.invoice_no = ?
-  `, [invoiceNo]);
+    const sale = await queryOne(`
+      SELECT s.*, c.name AS customer_name, c.mobile AS customer_mobile, c.address AS customer_address, c.village AS customer_village, c.current_balance AS customer_current_balance,
+             u.full_name AS cashier_name
+      FROM sales s
+      LEFT JOIN customers c ON s.customer_id = c.id
+      LEFT JOIN users u ON s.cashier_id = u.id
+      WHERE s.invoice_no = ?
+    `, [invoiceNo]);
 
-  if (!sale) {
-    return res.status(404).json({ success: false, message: 'Invoice not found.' });
+    if (!sale) {
+      return res.status(404).json({ success: false, message: 'Invoice not found.' });
+    }
+
+    const items = await queryAll(`
+      SELECT si.*, p.name AS product_name, p.product_code, p.sku, p.barcode, pb.batch_no, pb.exp_date
+      FROM sale_items si
+      JOIN products p ON si.product_id = p.id
+      JOIN product_batches pb ON si.batch_id = pb.id
+      WHERE si.sale_id = ?
+    `, [sale.id]);
+
+    const payments = await queryAll('SELECT * FROM sale_payments WHERE sale_id = ?', [sale.id]);
+    const settings = await queryAll('SELECT setting_key, setting_value FROM business_settings');
+    const storeSettings = {};
+    settings.forEach(s => { storeSettings[s.setting_key] = s.setting_value; });
+
+    return res.json({ success: true, sale, items, payments, storeSettings });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
-
-  const items = queryAll(`
-    SELECT si.*, p.name AS product_name, p.product_code, p.sku, p.barcode, pb.batch_no, pb.exp_date
-    FROM sale_items si
-    JOIN products p ON si.product_id = p.id
-    JOIN product_batches pb ON si.batch_id = pb.id
-    WHERE si.sale_id = ?
-  `, [sale.id]);
-
-  const payments = queryAll('SELECT * FROM sale_payments WHERE sale_id = ?', [sale.id]);
-  const settings = queryAll('SELECT setting_key, setting_value FROM business_settings');
-  const storeSettings = {};
-  settings.forEach(s => { storeSettings[s.setting_key] = s.setting_value; });
-
-  return res.json({ success: true, sale, items, payments, storeSettings });
 });
 
 export default router;

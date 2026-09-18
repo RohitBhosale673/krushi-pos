@@ -13,55 +13,63 @@ export function authenticateToken(req, res, next) {
     return res.status(401).json({ success: false, message: 'Access token required. Please log in.' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, async (err, user) => {
     if (err) {
       return res.status(403).json({ success: false, message: 'Invalid or expired session token.' });
     }
     
-    // Ensure user is still active in DB
-    const activeUser = queryOne('SELECT id, username, full_name, status FROM users WHERE id = ?', [user.id]);
-    if (!activeUser || activeUser.status !== 'active') {
-      return res.status(403).json({ success: false, message: 'User account is inactive or disabled.' });
-    }
+    try {
+      // Ensure user is still active in DB
+      const activeUser = await queryOne('SELECT id, username, full_name, status FROM users WHERE id = ?', [user.id]);
+      if (!activeUser || activeUser.status !== 'active') {
+        return res.status(403).json({ success: false, message: 'User account is inactive or disabled.' });
+      }
 
-    req.user = activeUser;
-    next();
+      req.user = activeUser;
+      next();
+    } catch (dbErr) {
+      return res.status(500).json({ success: false, message: 'Database authentication error: ' + dbErr.message });
+    }
   });
 }
 
 export function requirePermission(moduleName, actionName) {
-  return (req, res, next) => {
-    const userId = req.user.id;
+  return async (req, res, next) => {
+    try {
+      const userId = req.user.id;
 
-    // Check if user is Super Admin
-    const userRole = queryOne(`
-      SELECT r.name 
-      FROM roles r 
-      JOIN user_roles ur ON r.id = ur.role_id 
-      WHERE ur.user_id = ? AND r.name = 'Super Admin'
-    `, [userId]);
+      // Check if user is Super Admin
+      const userRole = await queryOne(`
+        SELECT r.name 
+        FROM roles r 
+        JOIN user_roles ur ON r.id = ur.role_id 
+        WHERE ur.user_id = ? AND r.name = 'Super Admin'
+      `, [userId]);
 
-    if (userRole) {
-      return next(); // Super Admin bypasses permission check
+      if (userRole) {
+        return next(); // Super Admin bypasses permission check
+      }
+
+      // Check module permission via roles
+      const hasPerm = await queryOne(`
+        SELECT 1 
+        FROM user_roles ur
+        JOIN role_permissions rp ON ur.role_id = rp.role_id
+        JOIN permissions p ON rp.permission_id = p.id
+        WHERE ur.user_id = ? AND p.module = ? AND p.action = ?
+      `, [userId, moduleName, actionName]);
+
+      if (hasPerm) {
+        return next();
+      }
+
+      return res.status(403).json({
+        success: false,
+        message: `Permission denied. Accessing '${moduleName}:${actionName}' requires higher privileges.`
+      });
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
     }
-
-    // Check module permission via roles
-    const hasPerm = queryOne(`
-      SELECT 1 
-      FROM user_roles ur
-      JOIN role_permissions rp ON ur.role_id = rp.role_id
-      JOIN permissions p ON rp.permission_id = p.id
-      WHERE ur.user_id = ? AND p.module = ? AND p.action = ?
-    `, [userId, moduleName, actionName]);
-
-    if (hasPerm) {
-      return next();
-    }
-
-    return res.status(403).json({
-      success: false,
-      message: `Permission denied. Accessing '${moduleName}:${actionName}' requires higher privileges.`
-    });
   };
 }
 
@@ -79,7 +87,9 @@ export function logAuditAction(userId, action, moduleName, recordId = null, oldV
       oldVal ? (typeof oldVal === 'string' ? oldVal : JSON.stringify(oldVal)) : null,
       newVal ? (typeof newVal === 'string' ? newVal : JSON.stringify(newVal)) : null,
       ip
-    ]);
+    ]).catch(err => {
+      console.error('Audit log recording error:', err);
+    });
   } catch (err) {
     console.error('Audit log recording error:', err);
   }
