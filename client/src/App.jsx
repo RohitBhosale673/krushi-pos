@@ -77,7 +77,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <Login onLoginSuccess={setUser} showToast={showToast} />;
+    return (
+      <>
+        <Login onLoginSuccess={setUser} showToast={showToast} />
+        <Toast toast={toast} onClose={() => setToast(null)} />
+      </>
+    );
   }
 
   // Render Page module based on active tab
