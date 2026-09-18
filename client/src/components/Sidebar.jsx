@@ -63,7 +63,11 @@ export default function Sidebar({ activeTab, onSelectTab, userPermissions = [], 
       }
     }
 
-    // 3. Check user RBAC permissions
+    // 3. Store Manager or Admin has full access to all allowed modules of their store
+    const isManager = user?.roles && user.roles.some(r => /manager|admin/i.test(r));
+    if (isManager) return true;
+
+    // 4. Check user RBAC permissions for staff
     if (!item.perm) return true;
     return userPermissions.includes(item.perm) || userPermissions.includes('all');
   };

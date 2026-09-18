@@ -616,6 +616,104 @@ export async function initSchema(db) {
 
   // 3. Create all indexes
   await exec(indexSQL);
+
+  // 4. Ensure master permissions & default roles exist (essential for existing production databases)
+  try {
+    let permCount = 0;
+    if (db && typeof db.execute === 'function') {
+      const pRes = await db.execute("SELECT COUNT(*) AS cnt FROM permissions;");
+      permCount = Number(pRes?.rows?.[0]?.[0] || pRes?.rows?.[0]?.cnt || 0);
+    }
+    if (permCount === 0) {
+      await initMasterPermissionsAndRoles(exec, db);
+    }
+  } catch (_) {}
+}
+
+async function initMasterPermissionsAndRoles(exec, db) {
+  const defaultPermissions = [
+    ['pos', 'create', 'Create POS sales bills'],
+    ['pos', 'hold', 'Hold and resume bills'],
+    ['pos', 'cancel', 'Cancel completed bills'],
+    ['pos', 'reprint', 'Reprint old invoices'],
+    ['pos', 'discount', 'Apply bill level discounts'],
+    ['pos', 'override_expiry', 'Override expired stock sale block'],
+    ['products', 'view', 'View product catalog'],
+    ['products', 'manage', 'Add/Edit/Delete products'],
+    ['batches', 'view', 'View stock batches and expiry dates'],
+    ['batches', 'manage', 'Adjust batch stock & status'],
+    ['inventory', 'adjust', 'Perform manual stock adjustments'],
+    ['purchases', 'view', 'View purchase invoices'],
+    ['purchases', 'create', 'Create purchase invoice'],
+    ['suppliers', 'view', 'View supplier master & ledger'],
+    ['suppliers', 'manage', 'Add/Edit suppliers & payments'],
+    ['customers', 'view', 'View customer directory & balances'],
+    ['customers', 'manage', 'Add/Edit customer profiles'],
+    ['udhar', 'view', 'View outstanding Udhar & aging'],
+    ['udhar', 'collect', 'Receive customer Udhar payments'],
+    ['returns', 'sales_return', 'Process customer sales return'],
+    ['returns', 'purchase_return', 'Process supplier purchase return'],
+    ['expenses', 'manage', 'Add and view daily expenses'],
+    ['sms', 'send', 'Send SMS reminders to customers'],
+    ['reports', 'view', 'Access financial & inventory reports'],
+    ['reports', 'export', 'Export report data to CSV/PDF'],
+    ['tenants', 'manage', 'Create and configure tenant organizations and limits'],
+    ['users', 'manage', 'Manage users, roles, and permissions'],
+    ['settings', 'manage', 'Edit business & thermal printer settings'],
+    ['audit', 'view', 'View security audit logs']
+  ];
+
+  for (const [mod, act, desc] of defaultPermissions) {
+    try {
+      if (db && typeof db.execute === 'function') {
+        await db.execute({
+          sql: 'INSERT OR IGNORE INTO permissions (module, action, description) VALUES (?, ?, ?)',
+          args: [mod, act, desc]
+        });
+      }
+    } catch (_) {}
+  }
+
+  const defaultRoles = [
+    ['Super Admin', 'Full system control, tenant provisioning, system-wide analytics', 1, 'system'],
+    ['Manager', 'Store management, staff accounts, purchases, billing, tenant settings', 1, 'tenant'],
+    ['Cashier', 'POS billing, sales returns, customer selection & receipt printing', 1, 'tenant'],
+    ['Inventory Staff', 'Stock tracking, batch updates, damage logs & FEFO checks', 1, 'tenant'],
+    ['Accountant', 'Udhari collection, daily expenses, GST reports, supplier payables', 1, 'tenant']
+  ];
+
+  for (const [rname, rdesc, isSys, scope] of defaultRoles) {
+    try {
+      if (db && typeof db.execute === 'function') {
+        await db.execute({
+          sql: 'INSERT OR IGNORE INTO roles (name, description, is_system, scope) VALUES (?, ?, ?, ?)',
+          args: [rname, rdesc, isSys, scope]
+        });
+      }
+    } catch (_) {}
+  }
+
+  // Link permissions to standard roles
+  try {
+    if (db && typeof db.execute === 'function') {
+      // Super Admin: all permissions
+      await db.execute(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = 'Super Admin'
+      `);
+      // Manager: all store permissions except global tenant provisioning
+      await db.execute(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = 'Manager' AND p.module != 'tenants'
+      `);
+      // Cashier
+      await db.execute(`
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id)
+        SELECT r.id, p.id FROM roles r, permissions p 
+        WHERE r.name = 'Cashier' AND (p.module = 'pos' OR p.module = 'customers' OR (p.module = 'products' AND p.action = 'view'))
+      `);
+    }
+  } catch (_) {}
 }
 
 export default {
@@ -623,3 +721,4 @@ export default {
   indexSQL,
   initSchema
 };
+

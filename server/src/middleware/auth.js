@@ -121,7 +121,13 @@ export function requirePermission(moduleName, actionName) {
         }
       }
 
-      // 3. User Permission check via roles
+      // 3. Store Manager or Admin has full permissions for their tenant modules
+      const isManager = req.user.roles && req.user.roles.some(r => /manager|admin/i.test(r));
+      if (isManager && moduleName !== 'tenants') {
+        return next();
+      }
+
+      // 4. User Permission check via roles
       const hasPerm = await queryOne(`
         SELECT 1 
         FROM user_roles ur

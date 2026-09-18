@@ -69,9 +69,21 @@ router.post('/login', async (req, res) => {
 
     // Permissions
     let permissions = [];
+    const isManager = roles && roles.some(r => /manager|admin/i.test(r));
+
     if (isSuperAdmin) {
       const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions");
       permissions = permRows.map(p => p.perm);
+    } else if (isManager) {
+      // Store Manager has all store permissions for their tenant
+      const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions WHERE module != 'tenants'");
+      permissions = permRows.length > 0 ? permRows.map(p => p.perm) : ['all'];
+      if (tenantData && tenantData.allowed_modules) {
+        permissions = permissions.filter(p => {
+          const mod = p.split(':')[0];
+          return tenantData.allowed_modules.includes(mod) || mod === 'auth';
+        });
+      }
     } else {
       const permRows = await queryAll(`
         SELECT DISTINCT p.module || ':' || p.action AS perm 
@@ -129,9 +141,21 @@ router.get('/me', authenticateToken, async (req, res) => {
     const isSuperAdmin = req.user.is_super_admin;
 
     let permissions = [];
+    const isManager = req.user.roles && req.user.roles.some(r => /manager|admin/i.test(r));
+
     if (isSuperAdmin) {
       const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions");
       permissions = permRows.map(p => p.perm);
+    } else if (isManager) {
+      // Store Manager has all store permissions for their tenant
+      const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions WHERE module != 'tenants'");
+      permissions = permRows.length > 0 ? permRows.map(p => p.perm) : ['all'];
+      if (req.user.tenant && req.user.tenant.allowed_modules) {
+        permissions = permissions.filter(p => {
+          const mod = p.split(':')[0];
+          return req.user.tenant.allowed_modules.includes(mod) || mod === 'auth';
+        });
+      }
     } else {
       const permRows = await queryAll(`
         SELECT DISTINCT p.module || ':' || p.action AS perm 
