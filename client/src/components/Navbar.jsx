@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ShoppingBag, LogOut, User, Zap, ShieldCheck, Clock, CheckCircle2, Store, Radio } from 'lucide-react';
+import { ShoppingBag, LogOut, User, Zap, ShieldCheck, Clock, CheckCircle2, Store, Radio, Menu } from 'lucide-react';
 
-export default function Navbar({ user, onNavigate, onLogout }) {
+export default function Navbar({ user, onNavigate, onLogout, onToggleSidebar }) {
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
@@ -28,22 +28,31 @@ export default function Navbar({ user, onNavigate, onLogout }) {
   };
 
   return (
-    <header className="bg-slate-950 text-white border-b border-slate-800/80 sticky top-0 z-40 px-4 py-2 flex items-center justify-between shadow-lg select-none">
-      {/* Brand, Terminal & Store Tag */}
-      <div className="flex items-center gap-3.5">
+    <header className="bg-slate-950 text-white border-b border-slate-800/80 sticky top-0 z-40 px-3 sm:px-4 py-2 flex items-center justify-between shadow-lg select-none">
+      {/* Brand, Hamburger & Store Tag */}
+      <div className="flex items-center gap-2 sm:gap-3.5">
+        <button
+          onClick={onToggleSidebar}
+          className="lg:hidden p-1.5 -ml-1 text-slate-400 hover:text-white hover:bg-slate-800/80 rounded-xl transition cursor-pointer"
+          title="Open Navigation Menu"
+          aria-label="Open Navigation Menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+
         <div
           onClick={() => onNavigate('dashboard')}
-          className="flex items-center gap-2.5 cursor-pointer group"
+          className="flex items-center gap-2 sm:gap-2.5 cursor-pointer group"
         >
-          <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 p-2 rounded-xl text-white shadow-md shadow-emerald-900/30 group-hover:scale-105 transition">
-            <ShoppingBag className="w-5 h-5 stroke-[2.2]" />
+          <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 p-1.5 sm:p-2 rounded-xl text-white shadow-md shadow-emerald-900/30 group-hover:scale-105 transition">
+            <ShoppingBag className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.2]" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-extrabold text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-300 bg-clip-text text-transparent">
+              <span className="font-extrabold text-base sm:text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-300 bg-clip-text text-transparent">
                 Krushi<span className="text-emerald-400">POS</span>
               </span>
-              <span className="text-[9px] font-bold px-1.5 py-0.2 bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 rounded uppercase tracking-wider">
+              <span className="hidden xs:inline-block text-[9px] font-bold px-1.5 py-0.2 bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 rounded uppercase tracking-wider">
                 Enterprise
               </span>
             </div>
@@ -79,28 +88,29 @@ export default function Navbar({ user, onNavigate, onLogout }) {
       </div>
 
       {/* Quick POS Action & Cashier Profile */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1.5 sm:gap-3">
         {/* Shortcut Button to Open POS */}
         <button
           onClick={() => onNavigate('pos')}
-          className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-md shadow-emerald-900/40 border border-emerald-400/30 transition-all hover:scale-[1.02] active:scale-95 cursor-pointer"
+          className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 sm:gap-2 shadow-md shadow-emerald-900/40 border border-emerald-400/30 transition-all hover:scale-[1.02] active:scale-95 cursor-pointer"
           title="Open POS Cashier Counter (F2)"
         >
-          <Zap className="w-4 h-4 text-amber-300 fill-amber-300" />
-          <span>Cashier POS</span>
-          <kbd className="kbd-chip kbd-chip-dark text-[10px] text-emerald-200 bg-emerald-900/80 border-emerald-700/60">
+          <Zap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300 fill-amber-300" />
+          <span className="hidden sm:inline">Cashier POS</span>
+          <span className="sm:hidden">POS</span>
+          <kbd className="hidden sm:inline-flex kbd-chip kbd-chip-dark text-[10px] text-emerald-200 bg-emerald-900/80 border-emerald-700/60">
             F2
           </kbd>
         </button>
 
         {/* User Info & Logout */}
         {user && (
-          <div className="flex items-center gap-2.5 pl-2 border-l border-slate-800">
-            <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 pl-2 pr-2.5 py-1 rounded-xl">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 pl-1.5 sm:pl-2 border-l border-slate-800">
+            <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 p-1 sm:pl-2 sm:pr-2.5 sm:py-1 rounded-xl">
               <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-sm">
                 {(user.full_name || user.username || 'U').charAt(0).toUpperCase()}
               </div>
-              <div className="text-left hidden sm:block">
+              <div className="text-left hidden md:block">
                 <p className="text-xs font-semibold text-slate-200 leading-tight">
                   {user.full_name || user.username}
                 </p>

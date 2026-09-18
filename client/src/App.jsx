@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
+import MobileBottomNav from './components/MobileBottomNav';
 import Toast from './components/Toast';
 import InvoiceModal from './components/InvoiceModal';
 
@@ -29,6 +30,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [printableInvoice, setPrintableInvoice] = useState(null);
 
@@ -129,14 +131,32 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 font-sans">
-      <Navbar user={user} onNavigate={setActiveTab} onLogout={handleLogout} />
+      <Navbar
+        user={user}
+        onNavigate={setActiveTab}
+        onLogout={handleLogout}
+        onToggleSidebar={() => setIsSidebarOpen(prev => !prev)}
+      />
 
-      <div className="flex-1 flex overflow-hidden">
-        <Sidebar activeTab={activeTab} onSelectTab={setActiveTab} userPermissions={user.permissions || []} />
-        <main className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex overflow-hidden relative">
+        <Sidebar
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          userPermissions={user.permissions || []}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+        />
+        <main className="flex-1 overflow-y-auto pb-16 lg:pb-0">
           {renderTabContent()}
         </main>
       </div>
+
+      {/* Native-like Mobile Bottom Navigation */}
+      <MobileBottomNav
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        onOpenMenu={() => setIsSidebarOpen(true)}
+      />
 
       {/* Global Toast */}
       <Toast toast={toast} onClose={() => setToast(null)} />

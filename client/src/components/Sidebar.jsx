@@ -2,10 +2,10 @@ import React from 'react';
 import {
   LayoutDashboard, ShoppingCart, Package, Layers, BarChart3,
   Truck, Users, CreditCard, MessageSquare, RotateCcw, Undo2,
-  DollarSign, PieChart, UserCheck, Settings, ShieldAlert, Cpu
+  DollarSign, PieChart, UserCheck, Settings, ShieldAlert, Cpu, X, ShoppingBag
 } from 'lucide-react';
 
-export default function Sidebar({ activeTab, onSelectTab, userPermissions = [] }) {
+export default function Sidebar({ activeTab, onSelectTab, userPermissions = [], isOpen = false, onClose }) {
   const menuGroups = [
     {
       title: 'CORE BILLING & STOCK',
@@ -56,15 +56,53 @@ export default function Sidebar({ activeTab, onSelectTab, userPermissions = [] }
     return userPermissions.includes(permStr) || userPermissions.includes('all');
   };
 
+  const handleItemClick = (id) => {
+    onSelectTab(id);
+    if (onClose) onClose();
+  };
+
   return (
-    <aside className="w-64 bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800/80 shrink-0 select-none overflow-y-auto dark-scrollbar">
-      <div className="p-3 space-y-5 flex-1">
-        {menuGroups.map((group, gIdx) => (
-          <div key={gIdx}>
-            <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 flex items-center justify-between">
-              <span>{group.title}</span>
-            </p>
-            <div className="space-y-0.5">
+    <>
+      {/* Mobile Backdrop Overlay */}
+      {isOpen && (
+        <div
+          onClick={onClose}
+          className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-40 lg:hidden transition-opacity"
+          aria-hidden="true"
+        />
+      )}
+
+      <aside className={`
+        fixed lg:static top-0 bottom-0 left-0 z-50
+        w-72 lg:w-64 bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800/80 shrink-0 select-none overflow-y-auto dark-scrollbar transition-transform duration-300 ease-in-out shadow-2xl lg:shadow-none
+        ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
+        {/* Mobile Header with Close Button */}
+        <div className="lg:hidden p-3.5 border-b border-slate-800/80 flex items-center justify-between bg-slate-950">
+          <div className="flex items-center gap-2">
+            <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 p-1.5 rounded-xl text-white">
+              <ShoppingBag className="w-4 h-4 stroke-[2.2]" />
+            </div>
+            <span className="font-extrabold text-base text-white">
+              Krushi<span className="text-emerald-400">POS</span>
+            </span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-900 rounded-lg transition cursor-pointer"
+            title="Close Menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-3 space-y-5 flex-1">
+          {menuGroups.map((group, gIdx) => (
+            <div key={gIdx}>
+              <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 flex items-center justify-between">
+                <span>{group.title}</span>
+              </p>
+              <div className="space-y-0.5">
               {group.items.map((item) => {
                 if (!hasPerm(item.perm)) return null;
                 const Icon = item.icon;
@@ -72,7 +110,7 @@ export default function Sidebar({ activeTab, onSelectTab, userPermissions = [] }
                 return (
                   <button
                     key={item.id}
-                    onClick={() => onSelectTab(item.id)}
+                    onClick={() => handleItemClick(item.id)}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all group cursor-pointer relative ${
                       isActive
                         ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-950/50'
@@ -124,5 +162,6 @@ export default function Sidebar({ activeTab, onSelectTab, userPermissions = [] }
         </div>
       </div>
     </aside>
+    </>
   );
 }
