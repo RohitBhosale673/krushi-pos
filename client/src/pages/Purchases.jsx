@@ -103,8 +103,8 @@ export default function Purchases({ showToast }) {
         </button>
       </div>
 
-      {/* Purchases History Table */}
-      <div className="card-panel overflow-hidden">
+      {/* Purchase List Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

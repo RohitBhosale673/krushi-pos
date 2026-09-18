@@ -86,7 +86,8 @@ export default function Suppliers({ showToast }) {
         className="w-full bg-white border rounded-lg p-2 text-xs"
       />
 
-      <div className="card-panel overflow-hidden">
+      {/* Suppliers Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

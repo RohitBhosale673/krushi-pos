@@ -114,7 +114,7 @@ export default function UdharManagement({ onNavigate, showToast }) {
       )}
 
       {/* Customer Debtor List */}
-      <div className="card-panel overflow-hidden">
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

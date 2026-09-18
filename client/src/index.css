@@ -277,9 +277,36 @@
   font-weight: 600;
 }
 
+/* Universal Responsive Horizontal Table Scroll & Container */
+.card-panel:has(.data-table),
+.card-panel:has(table),
+div:has(> .data-table),
+.table-responsive,
+.overflow-x-auto {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+/* Clean Touch Horizontal Scrollbar */
+.card-panel:has(.data-table)::-webkit-scrollbar,
+.overflow-x-auto::-webkit-scrollbar {
+  height: 6px;
+}
+.card-panel:has(.data-table)::-webkit-scrollbar-thumb,
+.overflow-x-auto::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.card-panel:has(.data-table)::-webkit-scrollbar-track,
+.overflow-x-auto::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+
 /* Enterprise Data Table */
 .data-table {
   width: 100%;
+  min-width: 640px; /* Guarantees all columns are readable & swipeable on mobile */
   border-collapse: collapse;
   text-align: left;
   font-size: 0.8125rem;

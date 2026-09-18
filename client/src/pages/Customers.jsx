@@ -62,7 +62,8 @@ export default function Customers({ showToast }) {
         className="w-full bg-white border rounded-lg p-2 text-xs"
       />
 
-      <div className="card-panel overflow-hidden">
+      {/* Customer Directory Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

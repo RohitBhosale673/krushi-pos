@@ -185,8 +185,8 @@ export default function SalesReturns({ showToast }) {
         </div>
       )}
 
-      {/* Return History Table */}
-      <div className="card-panel overflow-hidden">
+      {/* Sales Returns History Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

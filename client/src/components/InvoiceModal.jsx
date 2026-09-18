@@ -214,10 +214,10 @@ _Thank you for your business!_`;
         </div>
 
         {/* Printable Document Preview */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-100 flex justify-center">
+        <div className="flex-1 overflow-y-auto overflow-x-auto p-2.5 sm:p-6 bg-slate-100 flex justify-start sm:justify-center">
           {printFormat === 'a4' ? (
             /* OFFICIAL GST A4 TAX INVOICE */
-            <div className="printable-area bg-white p-8 border border-slate-300 rounded-lg shadow-sm w-full max-w-3xl text-slate-900 text-xs font-sans">
+            <div className="printable-area bg-white p-4 sm:p-8 border border-slate-300 rounded-lg shadow-sm w-full max-w-3xl min-w-[640px] sm:min-w-0 text-slate-900 text-xs font-sans mx-auto">
               {/* Header: TAX INVOICE & Store Details */}
               <div className="border-b-2 border-slate-900 pb-3 mb-3">
                 <div className="flex justify-between items-start">

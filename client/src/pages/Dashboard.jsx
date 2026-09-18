@@ -61,13 +61,13 @@ export default function Dashboard({ onNavigate, showToast }) {
           <p className="text-xs text-slate-500 mt-0.5">Real-time revenue, stock valuation, and farmer credit overview</p>
         </div>
 
-        <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs text-xs">
-          <Calendar className="w-3.5 h-3.5 text-slate-400 ml-2 mr-1" />
+        <div className="w-full sm:w-auto flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs text-xs overflow-x-auto max-w-full no-scrollbar shrink-0">
+          <Calendar className="w-3.5 h-3.5 text-slate-400 ml-2 mr-1 shrink-0" />
           {['today', 'yesterday', 'week', 'month', 'custom'].map((f) => (
             <button
               key={f}
               onClick={() => setDateFilter(f)}
-              className={`px-3 py-1.5 rounded-lg font-semibold capitalize transition cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg font-semibold capitalize transition shrink-0 cursor-pointer ${
                 dateFilter === f
                   ? 'bg-slate-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -78,7 +78,7 @@ export default function Dashboard({ onNavigate, showToast }) {
           ))}
 
           {dateFilter === 'custom' && (
-            <div className="flex items-center gap-1.5 ml-2 border-l border-slate-200 pl-2 text-xs">
+            <div className="flex items-center gap-1.5 ml-2 border-l border-slate-200 pl-2 text-xs shrink-0">
               <input
                 type="date"
                 value={startDate}
@@ -319,28 +319,30 @@ export default function Dashboard({ onNavigate, showToast }) {
             <span className="text-[10px] text-slate-400 font-mono">By Revenue</span>
           </div>
 
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Product Description</th>
-                <th className="text-right">Qty Sold</th>
-                <th className="text-right">Revenue (₹)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {topProducts.length === 0 ? (
-                <tr><td colSpan="3" className="text-center py-6 text-slate-400">No product sales in this period.</td></tr>
-              ) : (
-                topProducts.map((p, idx) => (
-                  <tr key={idx}>
-                    <td className="font-semibold text-slate-900 text-xs">{p.name}</td>
-                    <td className="text-right font-mono font-semibold text-emerald-700 text-xs">{p.total_qty_sold}</td>
-                    <td className="text-right font-mono font-bold text-slate-900 text-xs">₹{p.total_revenue?.toLocaleString('en-IN')}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto -mx-1 px-1">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Product Description</th>
+                  <th className="text-right">Qty Sold</th>
+                  <th className="text-right">Revenue (₹)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {topProducts.length === 0 ? (
+                  <tr><td colSpan="3" className="text-center py-6 text-slate-400">No product sales in this period.</td></tr>
+                ) : (
+                  topProducts.map((p, idx) => (
+                    <tr key={idx}>
+                      <td className="font-semibold text-slate-900 text-xs">{p.name}</td>
+                      <td className="text-right font-mono font-semibold text-emerald-700 text-xs">{p.total_qty_sold}</td>
+                      <td className="text-right font-mono font-bold text-slate-900 text-xs">₹{p.total_revenue?.toLocaleString('en-IN')}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Recent Invoices */}
@@ -352,34 +354,36 @@ export default function Dashboard({ onNavigate, showToast }) {
             </button>
           </div>
 
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Invoice #</th>
-                <th>Farmer / Customer</th>
-                <th className="text-right">Total (₹)</th>
-                <th className="text-center">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {recentSales.length === 0 ? (
-                <tr><td colSpan="4" className="text-center py-6 text-slate-400">No recent transactions.</td></tr>
-              ) : (
-                recentSales.map((s) => (
-                  <tr key={s.id}>
-                    <td className="font-mono font-bold text-slate-900 text-xs">{s.invoice_no}</td>
-                    <td className="text-slate-600 text-xs font-medium">{s.customer_name || 'Walk-in'}</td>
-                    <td className="text-right font-mono font-bold text-xs text-slate-900">₹{s.grand_total}</td>
-                    <td className="text-center">
-                      <span className={s.payment_status === 'PAID' ? 'badge-paid' : s.payment_status === 'PARTIAL' ? 'badge-partial' : 'badge-unpaid'}>
-                        {s.payment_status}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto -mx-1 px-1">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Invoice #</th>
+                  <th>Farmer / Customer</th>
+                  <th className="text-right">Total (₹)</th>
+                  <th className="text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {recentSales.length === 0 ? (
+                  <tr><td colSpan="4" className="text-center py-6 text-slate-400">No recent transactions.</td></tr>
+                ) : (
+                  recentSales.map((s) => (
+                    <tr key={s.id}>
+                      <td className="font-mono font-bold text-slate-900 text-xs">{s.invoice_no}</td>
+                      <td className="text-slate-600 text-xs font-medium">{s.customer_name || 'Walk-in'}</td>
+                      <td className="text-right font-mono font-bold text-xs text-slate-900">₹{s.grand_total}</td>
+                      <td className="text-center">
+                        <span className={s.payment_status === 'PAID' ? 'badge-paid' : s.payment_status === 'PARTIAL' ? 'badge-partial' : 'badge-unpaid'}>
+                          {s.payment_status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

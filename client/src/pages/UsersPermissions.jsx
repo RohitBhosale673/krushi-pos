@@ -250,7 +250,8 @@ export default function UsersPermissions({ showToast }) {
             </button>
           </div>
 
-          <div className="card-panel overflow-hidden">
+          {/* Users Table */}
+          <div className="card-panel overflow-x-auto">
             <table className="data-table">
               <thead>
                 <tr>

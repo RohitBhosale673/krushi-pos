@@ -215,7 +215,7 @@ export default function Products({ showToast }) {
       </div>
 
       {/* Product Table */}
-      <div className="card-panel overflow-hidden shadow-sm">
+      <div className="card-panel overflow-x-auto shadow-sm">
         <table className="data-table">
           <thead>
             <tr>

@@ -79,7 +79,8 @@ export default function PurchaseReturns({ showToast }) {
         </button>
       </div>
 
-      <div className="card-panel overflow-hidden">
+      {/* Purchase Returns Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

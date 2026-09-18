@@ -188,7 +188,8 @@ export default function Reports({ showToast }) {
               </button>
             </div>
 
-            <table className="data-table">
+            <div className="overflow-x-auto">
+              <table className="data-table">
               <thead>
                 <tr>
                   <th>Invoice #</th>
@@ -226,6 +227,7 @@ export default function Reports({ showToast }) {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
@@ -282,8 +284,8 @@ export default function Reports({ showToast }) {
             </div>
           )}
 
-          {/* All Sales Table */}
-          <div className="card-panel overflow-hidden">
+          {/* GST Audit Breakdown Table */}
+      <div className="card-panel overflow-x-auto">
             <table className="data-table">
               <thead>
                 <tr>

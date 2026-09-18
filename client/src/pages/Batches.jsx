@@ -98,7 +98,7 @@ export default function Batches({ showToast }) {
       </div>
 
       {/* Batches Table */}
-      <div className="card-panel overflow-hidden">
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

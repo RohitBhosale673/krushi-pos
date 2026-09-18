@@ -73,8 +73,8 @@ export default function Inventory({ showToast }) {
         ))}
       </div>
 
-      {/* Movements Audit Table */}
-      <div className="card-panel overflow-hidden">
+      {/* Stock Movement Ledger Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

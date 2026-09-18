@@ -42,7 +42,8 @@ export default function AuditLogs({ showToast }) {
         ))}
       </div>
 
-      <div className="card-panel overflow-hidden">
+       {/* Security Audit Table */}
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>

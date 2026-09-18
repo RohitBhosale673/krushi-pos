@@ -101,7 +101,7 @@ export default function Expenses({ showToast }) {
       </div>
 
       {/* Expenses Table */}
-      <div className="card-panel overflow-hidden">
+      <div className="card-panel overflow-x-auto">
         <table className="data-table">
           <thead>
             <tr>
