@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -9,19 +9,31 @@ router.use(authenticateToken);
 // List Eligible Customers & SMS Settings
 router.get('/eligible-customers', requirePermission('sms', 'send'), async (req, res) => {
   try {
-    const customers = await queryAll(`
+    const tenantScope = getTenantScope(req);
+    const assignedTenantId = tenantScope !== null ? tenantScope : (req.user?.tenant_id || 1);
+
+    let sql = `
       SELECT id, name, mobile, village, current_balance AS outstanding_amount, credit_limit,
              (SELECT MAX(created_at) FROM customer_transactions WHERE customer_id = customers.id AND txn_type = 'SALE') AS last_sale_date
       FROM customers
       WHERE current_balance > 0 AND mobile IS NOT NULL AND mobile != ''
-      ORDER BY current_balance DESC
-    `);
+    `;
+    const params = [];
 
-    const templateRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'sms_template_udhar'");
+    if (tenantScope !== null) {
+      sql += ` AND tenant_id = ?`;
+      params.push(tenantScope);
+    }
+
+    sql += ` ORDER BY current_balance DESC`;
+
+    const customers = await queryAll(sql, params);
+
+    const templateRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'sms_template_udhar'", [assignedTenantId]);
     const templateSetting = templateRow?.setting_value || 
       'Dear {customer_name}, your outstanding balance at {store_name} is Rs.{outstanding_amount}. Kindly settle at your convenience. Contact: {store_phone}.';
 
-    const providerRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'sms_provider'");
+    const providerRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'sms_provider'", [assignedTenantId]);
     const providerSetting = providerRow?.setting_value || 'Simulated';
 
     return res.json({ success: true, customers, template: templateSetting, provider: providerSetting });
@@ -44,15 +56,17 @@ function renderSmsMessage(template, customerName, outstandingAmt, storeName, sto
 router.post('/send-reminders', requirePermission('sms', 'send'), async (req, res) => {
   try {
     const { customer_ids, template_override } = req.body;
+    const tenantScope = getTenantScope(req);
+    const assignedTenantId = tenantScope !== null ? tenantScope : (req.user?.tenant_id || 1);
 
     if (!customer_ids || !Array.isArray(customer_ids) || customer_ids.length === 0) {
       return res.status(400).json({ success: false, message: 'Select at least one customer to send SMS.' });
     }
 
-    const storeNameRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'store_name'");
-    const storePhoneRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'mobile'");
-    const providerRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'sms_provider'");
-    const defaultTemplateRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'sms_template_udhar'");
+    const storeNameRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'store_name'", [assignedTenantId]);
+    const storePhoneRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'mobile'", [assignedTenantId]);
+    const providerRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'sms_provider'", [assignedTenantId]);
+    const defaultTemplateRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'sms_template_udhar'", [assignedTenantId]);
 
     const storeName = storeNameRow?.setting_value || 'Krushi Seva Kendra';
     const storePhone = storePhoneRow?.setting_value || '9822012345';
@@ -66,7 +80,7 @@ router.post('/send-reminders', requirePermission('sms', 'send'), async (req, res
     let failCount = 0;
 
     for (const cid of customer_ids) {
-      const cust = await queryOne('SELECT id, name, mobile, current_balance FROM customers WHERE id = ?', [cid]);
+      const cust = await queryOne('SELECT id, name, mobile, current_balance FROM customers WHERE id = ? AND tenant_id = ?', [cid, assignedTenantId]);
       if (!cust || !cust.mobile) continue;
 
       const messageText = renderSmsMessage(activeTemplate, cust.name, cust.current_balance, storeName, storePhone);
@@ -82,24 +96,24 @@ router.post('/send-reminders', requirePermission('sms', 'send'), async (req, res
         }
 
         await run(`
-          INSERT INTO sms_logs (customer_id, mobile, template_name, message, provider, provider_msg_id, status, sent_by)
-          VALUES (?, ?, 'udhar_reminder', ?, ?, ?, ?, ?)
-        `, [cust.id, cust.mobile, messageText, provider, providerMsgId, smsStatus, req.user.id]);
+          INSERT INTO sms_logs (tenant_id, customer_id, mobile, template_name, message, provider, provider_msg_id, status, sent_by)
+          VALUES (?, ?, ?, 'udhar_reminder', ?, ?, ?, ?, ?)
+        `, [assignedTenantId, cust.id, cust.mobile, messageText, provider, providerMsgId, smsStatus, req.user.id]);
 
         successCount++;
         results.push({ customer_id: cust.id, name: cust.name, mobile: cust.mobile, status: 'SENT', msg_id: providerMsgId });
       } catch (err) {
         failCount++;
         await run(`
-          INSERT INTO sms_logs (customer_id, mobile, template_name, message, provider, status, error_message, sent_by)
-          VALUES (?, ?, 'udhar_reminder', ?, ?, 'FAILED', ?, ?)
-        `, [cust.id, cust.mobile, messageText, provider, err.message, req.user.id]);
+          INSERT INTO sms_logs (tenant_id, customer_id, mobile, template_name, message, provider, status, error_message, sent_by)
+          VALUES (?, ?, ?, 'udhar_reminder', ?, ?, 'FAILED', ?, ?)
+        `, [assignedTenantId, cust.id, cust.mobile, messageText, provider, err.message, req.user.id]);
 
         results.push({ customer_id: cust.id, name: cust.name, mobile: cust.mobile, status: 'FAILED', error: err.message });
       }
     }
 
-    logAuditAction(req.user.id, 'SEND_BULK_SMS', 'sms', null, null, { successCount, failCount, provider }, req);
+    logAuditAction(req.user.id, 'SEND_BULK_SMS', 'sms', null, null, { successCount, failCount, provider, tenant_id: assignedTenantId }, req);
 
     return res.json({
       success: true,
@@ -116,14 +130,25 @@ router.post('/send-reminders', requirePermission('sms', 'send'), async (req, res
 // SMS History Logs
 router.get('/logs', requirePermission('sms', 'send'), async (req, res) => {
   try {
-    const logs = await queryAll(`
+    const tenantScope = getTenantScope(req);
+
+    let sql = `
       SELECT sl.*, c.name AS customer_name, u.username AS sent_by_user
       FROM sms_logs sl
       LEFT JOIN customers c ON sl.customer_id = c.id
       LEFT JOIN users u ON sl.sent_by = u.id
-      ORDER BY sl.sent_at DESC LIMIT 100
-    `);
+      WHERE 1=1
+    `;
+    const params = [];
 
+    if (tenantScope !== null) {
+      sql += ` AND sl.tenant_id = ?`;
+      params.push(tenantScope);
+    }
+
+    sql += ` ORDER BY sl.sent_at DESC LIMIT 100`;
+
+    const logs = await queryAll(sql, params);
     return res.json({ success: true, logs });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

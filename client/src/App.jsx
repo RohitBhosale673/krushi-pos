@@ -119,7 +119,7 @@ export default function App() {
       case 'reports':
         return <Reports showToast={showToast} />;
       case 'users':
-        return <UsersPermissions showToast={showToast} />;
+        return <UsersPermissions showToast={showToast} user={user} />;
       case 'settings':
         return <BusinessSettings showToast={showToast} />;
       case 'audit':
@@ -143,6 +143,7 @@ export default function App() {
           activeTab={activeTab}
           onSelectTab={setActiveTab}
           userPermissions={user.permissions || []}
+          user={user}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
         />

@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/search', requirePermission('pos', 'create'), async (req, res) => {
   try {
     const { q, category_id, product_type } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT pb.id AS batch_id, pb.batch_no, pb.exp_date, pb.mfg_date,
@@ -28,6 +29,11 @@ router.get('/search', requirePermission('pos', 'create'), async (req, res) => {
     `;
 
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND p.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (q && q.trim() !== '') {
       const term = `%${q.trim()}%`;
@@ -73,38 +79,42 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
   } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ success: false, message: 'Cart items cannot be empty.' });
+    return res.status(400).json({ success: false, message: 'No items in sale bill.' });
   }
 
   if (!payments || !Array.isArray(payments) || payments.length === 0) {
-    return res.status(400).json({ success: false, message: 'At least one payment method is required.' });
+    return res.status(400).json({ success: false, message: 'Payment information is required.' });
   }
 
-  try {
-    let newInvoiceNo;
-    let saleId;
-    let computedGrandTotal = 0;
-    let totalTaxable = 0;
-    let totalTax = 0;
+  const tenantScope = getTenantScope(req);
+  const assignedTenantId = tenantScope !== null ? tenantScope : (req.body.tenant_id || 1);
 
+  let saleId;
+  let newInvoiceNo;
+  let computedGrandTotal = 0;
+
+  try {
     await transaction(async () => {
+      // 1. Validate items & stock availability within this tenant
+      let totalTaxable = 0;
+      let totalTax = 0;
+      let totalItemSubtotal = 0;
       const today = new Date().toISOString().split('T')[0];
 
-      // 1. Validate items & stock
       const processedItems = [];
-      let totalItemSubtotal = 0;
 
       for (const item of items) {
         const batch = await queryOne(`
-          SELECT pb.*, p.name AS product_name, p.gst_rate, p.primary_unit_id, u.symbol AS unit_symbol
+          SELECT pb.*, p.name AS product_name, p.gst_rate, p.selling_price, p.purchase_price, p.mrp, p.tenant_id,
+                 u.symbol AS unit_symbol
           FROM product_batches pb
           JOIN products p ON pb.product_id = p.id
           LEFT JOIN units u ON p.primary_unit_id = u.id
-          WHERE pb.id = ?
-        `, [item.batch_id]);
+          WHERE pb.id = ? AND pb.tenant_id = ?
+        `, [item.batch_id, assignedTenantId]);
 
         if (!batch) {
-          throw new Error(`Batch ID ${item.batch_id} not found.`);
+          throw new Error(`Batch ID ${item.batch_id} not found in your organization stock.`);
         }
 
         if (batch.available_qty < item.qty) {
@@ -152,7 +162,7 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
       const roundedOff = parseFloat(round_off) || 0;
       computedGrandTotal = Math.round((subTotalAfterDiscount + roundedOff) * 100) / 100;
 
-      // 3. Payment calculations (handling split payments)
+      // 3. Payment calculations
       let totalPaid = 0;
       let udharAmount = 0;
 
@@ -174,9 +184,9 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
           throw new Error('Customer selection is required for Credit / Udhar sales.');
         }
 
-        cust = await queryOne('SELECT * FROM customers WHERE id = ?', [customer_id]);
+        cust = await queryOne('SELECT * FROM customers WHERE id = ? AND tenant_id = ?', [customer_id, assignedTenantId]);
         if (!cust) {
-          throw new Error('Selected customer not found.');
+          throw new Error('Selected customer not found in your organization.');
         }
 
         const newBal = cust.current_balance + (udharAmount > 0 ? udharAmount : dueAmount);
@@ -185,11 +195,11 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
         }
       }
 
-      // Generate invoice number
-      const prefixRow = await queryOne("SELECT setting_value FROM business_settings WHERE setting_key = 'invoice_prefix'");
+      // Generate invoice number scoped to tenant
+      const prefixRow = await queryOne("SELECT setting_value FROM business_settings WHERE tenant_id = ? AND setting_key = 'invoice_prefix'", [assignedTenantId]);
       const prefixSetting = prefixRow?.setting_value || 'KSK/';
-      const maxIdRow = await queryOne('SELECT COALESCE(MAX(id), 0) + 1 AS next_seq FROM sales');
-      const nextSeq = String(maxIdRow?.next_seq || 1).padStart(4, '0');
+      const countRow = await queryOne('SELECT COUNT(*) AS cnt FROM sales WHERE tenant_id = ?', [assignedTenantId]);
+      const nextSeq = String((countRow?.cnt || 0) + 1).padStart(4, '0');
       const yearStr = new Date().getFullYear();
       newInvoiceNo = `${prefixSetting}${yearStr}/${nextSeq}`;
 
@@ -204,11 +214,11 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
       // 4. Insert Sale Record
       const resSale = await run(`
         INSERT INTO sales (
-          invoice_no, customer_id, cashier_id, total_taxable, total_tax, total_discount,
+          tenant_id, invoice_no, customer_id, cashier_id, total_taxable, total_tax, total_discount,
           round_off, grand_total, paid_amount, due_amount, payment_status, sale_type, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        newInvoiceNo, customer_id || null, req.user.id, totalTaxable, totalTax, finalDiscount,
+        assignedTenantId, newInvoiceNo, customer_id || null, req.user.id, totalTaxable, totalTax, finalDiscount,
         roundedOff, computedGrandTotal, totalPaid, dueAmount > 0 ? dueAmount : udharAmount,
         paymentStatus, (udharAmount > 0 || dueAmount > 0) ? 'CREDIT' : 'RETAIL', notes || null
       ]);
@@ -219,19 +229,19 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
       for (const item of processedItems) {
         await run(`
           INSERT INTO sale_items (
-            sale_id, product_id, batch_id, qty, unit, unit_price, mrp,
+            tenant_id, sale_id, product_id, batch_id, qty, unit, unit_price, mrp,
             discount_percent, discount_amount, gst_rate, taxable_amount,
             cgst_amount, sgst_amount, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-          saleId, item.product_id, item.batch_id, item.qty, item.unit, item.unit_price, item.mrp,
+          assignedTenantId, saleId, item.product_id, item.batch_id, item.qty, item.unit, item.unit_price, item.mrp,
           item.discount_percent, item.discount_amount, item.gst_rate, item.taxable_amount,
           item.cgst_amount, item.sgst_amount, item.total_amount
         ]);
 
         // Update Batch Available Qty & Sold Qty
         const bRow = await queryOne('SELECT available_qty, qty_sold, status FROM product_batches WHERE id = ?', [item.batch_id]);
-        const newAvail = bRow.available_qty - item.qty;
+        const newAvail = Math.max(0, bRow.available_qty - item.qty);
         const newSold = bRow.qty_sold + item.qty;
         const newStatus = newAvail === 0 ? 'Out of Stock' : bRow.status;
 
@@ -244,17 +254,17 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
         // Record stock movement
         await run(`
           INSERT INTO stock_movements (
-            product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, reference_type, reference_id, notes, user_id
-          ) VALUES (?, ?, 'sale', ?, ?, ?, 'sale', ?, 'POS Bill Sale', ?)
-        `, [item.product_id, item.batch_id, -item.qty, bRow.available_qty, newAvail, newInvoiceNo, req.user.id]);
+            tenant_id, product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, reference_type, reference_id, notes, user_id
+          ) VALUES (?, ?, ?, 'sale', ?, ?, ?, 'sale', ?, 'POS Bill Sale', ?)
+        `, [assignedTenantId, item.product_id, item.batch_id, -item.qty, bRow.available_qty, newAvail, newInvoiceNo, req.user.id]);
       }
 
       // 6. Record Split Payments
       for (const p of payments) {
         await run(`
-          INSERT INTO sale_payments (sale_id, payment_method, amount, txn_ref, notes)
-          VALUES (?, ?, ?, ?, ?)
-        `, [saleId, p.payment_method, p.amount, p.txn_ref || null, p.notes || null]);
+          INSERT INTO sale_payments (tenant_id, sale_id, payment_method, amount, txn_ref, notes)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `, [assignedTenantId, saleId, p.payment_method, p.amount, p.txn_ref || null, p.notes || null]);
       }
 
       // 7. Record Customer Ledger Transaction if credit/due
@@ -264,13 +274,13 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
         await run('UPDATE customers SET current_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newBal, customer_id]);
 
         await run(`
-          INSERT INTO customer_transactions (customer_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id)
-          VALUES (?, 'SALE', ?, ?, 'Credit', 'sale', ?, ?, ?)
-        `, [customer_id, totalCreditDue, newBal, newInvoiceNo, `Credit sale ${newInvoiceNo}`, req.user.id]);
+          INSERT INTO customer_transactions (tenant_id, customer_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id)
+          VALUES (?, ?, 'SALE', ?, ?, 'Credit', 'sale', ?, ?, ?)
+        `, [assignedTenantId, customer_id, totalCreditDue, newBal, newInvoiceNo, `Credit sale ${newInvoiceNo}`, req.user.id]);
       }
     });
 
-    logAuditAction(req.user.id, 'CREATE_POS_SALE', 'pos', saleId, null, { invoice_no: newInvoiceNo, grand_total: computedGrandTotal }, req);
+    logAuditAction(req.user.id, 'CREATE_POS_SALE', 'pos', saleId, null, { invoice_no: newInvoiceNo, grand_total: computedGrandTotal, tenant_id: assignedTenantId }, req);
 
     return res.json({
       success: true,
@@ -284,7 +294,7 @@ router.post('/sale', requirePermission('pos', 'create'), async (req, res) => {
   }
 });
 
-// Hold / Draft Bills
+// Hold / Draft Bills (In-Memory per Tenant)
 let heldBillsStore = [];
 
 router.post('/hold', requirePermission('pos', 'hold'), (req, res) => {
@@ -293,8 +303,10 @@ router.post('/hold', requirePermission('pos', 'hold'), (req, res) => {
     return res.status(400).json({ success: false, message: 'Cart items empty.' });
   }
 
+  const tenantScope = getTenantScope(req);
   const holdRecord = {
     id: Date.now(),
+    tenant_id: tenantScope || 1,
     customer_name: customer_name || 'Walk-in Customer',
     items,
     notes,
@@ -306,12 +318,21 @@ router.post('/hold', requirePermission('pos', 'hold'), (req, res) => {
 });
 
 router.get('/held', requirePermission('pos', 'hold'), (req, res) => {
-  return res.json({ success: true, heldBills: heldBillsStore });
+  const tenantScope = getTenantScope(req);
+  const filtered = tenantScope !== null ? heldBillsStore.filter(h => h.tenant_id === tenantScope) : heldBillsStore;
+  return res.json({ success: true, heldBills: filtered });
 });
 
 router.delete('/held/:id', requirePermission('pos', 'hold'), (req, res) => {
   const holdId = parseInt(req.params.id);
-  heldBillsStore = heldBillsStore.filter(h => h.id !== holdId);
+  const tenantScope = getTenantScope(req);
+
+  heldBillsStore = heldBillsStore.filter(h => {
+    if (h.id !== holdId) return true;
+    if (tenantScope !== null && h.tenant_id !== tenantScope) return true;
+    return false;
+  });
+
   return res.json({ success: true, message: 'Held bill removed' });
 });
 
@@ -319,15 +340,24 @@ router.delete('/held/:id', requirePermission('pos', 'hold'), (req, res) => {
 router.get('/invoice/:invoice_no', requirePermission('pos', 'reprint'), async (req, res) => {
   try {
     const invoiceNo = req.params.invoice_no;
+    const tenantScope = getTenantScope(req);
 
-    const sale = await queryOne(`
+    let sql = `
       SELECT s.*, c.name AS customer_name, c.mobile AS customer_mobile, c.address AS customer_address, c.village AS customer_village, c.current_balance AS customer_current_balance,
              u.full_name AS cashier_name
       FROM sales s
       LEFT JOIN customers c ON s.customer_id = c.id
       LEFT JOIN users u ON s.cashier_id = u.id
       WHERE s.invoice_no = ?
-    `, [invoiceNo]);
+    `;
+    const params = [invoiceNo];
+
+    if (tenantScope !== null) {
+      sql += ` AND s.tenant_id = ?`;
+      params.push(tenantScope);
+    }
+
+    const sale = await queryOne(sql, params);
 
     if (!sale) {
       return res.status(404).json({ success: false, message: 'Invoice not found.' });
@@ -342,7 +372,7 @@ router.get('/invoice/:invoice_no', requirePermission('pos', 'reprint'), async (r
     `, [sale.id]);
 
     const payments = await queryAll('SELECT * FROM sale_payments WHERE sale_id = ?', [sale.id]);
-    const settings = await queryAll('SELECT setting_key, setting_value FROM business_settings');
+    const settings = await queryAll('SELECT setting_key, setting_value FROM business_settings WHERE tenant_id = ?', [sale.tenant_id]);
     const storeSettings = {};
     settings.forEach(s => { storeSettings[s.setting_key] = s.setting_value; });
 

@@ -9,11 +9,26 @@ export function setAuthToken(token) {
     localStorage.setItem('krushi_token', token);
   } else {
     localStorage.removeItem('krushi_token');
+    localStorage.removeItem('krushi_active_tenant');
+  }
+}
+
+export function getActiveTenantId() {
+  return localStorage.getItem('krushi_active_tenant');
+}
+
+export function setActiveTenantId(tenantId) {
+  if (tenantId) {
+    localStorage.setItem('krushi_active_tenant', String(tenantId));
+  } else {
+    localStorage.removeItem('krushi_active_tenant');
   }
 }
 
 export async function apiRequest(endpoint, options = {}) {
   const token = getAuthToken();
+  const activeTenant = getActiveTenantId();
+
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {})
@@ -21,6 +36,10 @@ export async function apiRequest(endpoint, options = {}) {
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  if (activeTenant) {
+    headers['x-tenant-id'] = activeTenant;
   }
 
   const config = {
@@ -45,7 +64,6 @@ export async function apiRequest(endpoint, options = {}) {
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         if (endpoint !== '/auth/login') {
-          // Token expired or invalid
           console.warn('Session expired or unauthorized');
         }
       }
@@ -61,3 +79,11 @@ export async function apiRequest(endpoint, options = {}) {
     throw new Error(message);
   }
 }
+
+export default {
+  getAuthToken,
+  setAuthToken,
+  getActiveTenantId,
+  setActiveTenantId,
+  apiRequest
+};

@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll } from '../db/connection.js';
-import { authenticateToken, requirePermission } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/dashboard', requirePermission('reports', 'view'), async (req, res) => {
   try {
     const { date_filter = 'today', start_date, end_date } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let dateCondition = "DATE(sale_date) = DATE('now')";
     let purchaseDateCondition = "DATE(purchase_date) = DATE('now')";
@@ -34,7 +35,7 @@ router.get('/dashboard', requirePermission('reports', 'view'), async (req, res) 
     const queryParams = (date_filter === 'custom' && start_date && end_date) ? [start_date, end_date] : [];
 
     // Sales Summary KPIs
-    const salesKpi = await queryOne(`
+    let salesKpiSql = `
       SELECT 
         COUNT(id) AS total_bills,
         COALESCE(SUM(grand_total), 0) AS total_sales,
@@ -44,16 +45,28 @@ router.get('/dashboard', requirePermission('reports', 'view'), async (req, res) 
         COALESCE(SUM(due_amount), 0) AS total_credit_sales
       FROM sales
       WHERE status = 'COMPLETED' AND ${dateCondition}
-    `, queryParams);
+    `;
+    const salesKpiParams = [...queryParams];
+    if (tenantScope !== null) {
+      salesKpiSql += ` AND tenant_id = ?`;
+      salesKpiParams.push(tenantScope);
+    }
+    const salesKpi = await queryOne(salesKpiSql, salesKpiParams);
 
     // Breakdown by Payment Method
-    const paymentBreakdown = await queryAll(`
+    let paymentSql = `
       SELECT sp.payment_method, COALESCE(SUM(sp.amount), 0) AS amount
       FROM sale_payments sp
       JOIN sales s ON sp.sale_id = s.id
       WHERE s.status = 'COMPLETED' AND ${dateCondition}
-      GROUP BY sp.payment_method
-    `, queryParams);
+    `;
+    const paymentParams = [...queryParams];
+    if (tenantScope !== null) {
+      paymentSql += ` AND s.tenant_id = ?`;
+      paymentParams.push(tenantScope);
+    }
+    paymentSql += ` GROUP BY sp.payment_method`;
+    const paymentBreakdown = await queryAll(paymentSql, paymentParams);
 
     let cashSales = 0;
     let upiSales = 0;
@@ -62,60 +75,108 @@ router.get('/dashboard', requirePermission('reports', 'view'), async (req, res) 
       if (p.payment_method === 'UPI') upiSales += p.amount;
     });
 
-    const udhRow = await queryOne("SELECT COALESCE(SUM(current_balance), 0) AS val FROM customers WHERE current_balance > 0");
+    let udhSql = "SELECT COALESCE(SUM(current_balance), 0) AS val FROM customers WHERE current_balance > 0";
+    const udhParams = [];
+    if (tenantScope !== null) {
+      udhSql += " AND tenant_id = ?";
+      udhParams.push(tenantScope);
+    }
+    const udhRow = await queryOne(udhSql, udhParams);
     const totalUdhari = udhRow?.val || 0;
 
-    const inventoryValuation = await queryOne(`
+    let invSql = `
       SELECT 
         COALESCE(SUM(available_qty * purchase_rate), 0) AS purchase_value,
         COALESCE(SUM(available_qty * selling_rate), 0) AS selling_value
       FROM product_batches
       WHERE available_qty > 0 AND status != 'Blocked'
-    `);
+    `;
+    const invParams = [];
+    if (tenantScope !== null) {
+      invSql += " AND tenant_id = ?";
+      invParams.push(tenantScope);
+    }
+    const inventoryValuation = await queryOne(invSql, invParams);
 
-    const lowStockRow = await queryOne(`
+    let lowStockSql = `
       SELECT COUNT(DISTINCT p.id) AS cnt
       FROM products p
       LEFT JOIN product_batches pb ON p.id = pb.product_id AND pb.status != 'Blocked'
-      GROUP BY p.id
-      HAVING COALESCE(SUM(pb.available_qty), 0) <= p.min_stock
-    `);
+      WHERE 1=1
+    `;
+    const lowStockParams = [];
+    if (tenantScope !== null) {
+      lowStockSql += " AND p.tenant_id = ?";
+      lowStockParams.push(tenantScope);
+    }
+    lowStockSql += ` GROUP BY p.id HAVING COALESCE(SUM(pb.available_qty), 0) <= p.min_stock`;
+    const lowStockRow = await queryOne(lowStockSql, lowStockParams);
     const lowStockCount = lowStockRow?.cnt || 0;
 
-    const expiringRow = await queryOne(`
-      SELECT COUNT(*) AS cnt FROM product_batches 
-      WHERE available_qty > 0 AND exp_date >= DATE('now') AND exp_date <= DATE('now', '+30 days')
-    `);
+    let expRowSql = `SELECT COUNT(*) AS cnt FROM product_batches WHERE available_qty > 0 AND exp_date >= DATE('now') AND exp_date <= DATE('now', '+30 days')`;
+    const expRowParams = [];
+    if (tenantScope !== null) {
+      expRowSql += " AND tenant_id = ?";
+      expRowParams.push(tenantScope);
+    }
+    const expiringRow = await queryOne(expRowSql, expRowParams);
     const expiringCount = expiringRow?.cnt || 0;
 
-    const expiredRow = await queryOne(`
-      SELECT COUNT(*) AS cnt FROM product_batches 
-      WHERE available_qty > 0 AND exp_date < DATE('now')
-    `);
+    let expdSql = `SELECT COUNT(*) AS cnt FROM product_batches WHERE available_qty > 0 AND exp_date < DATE('now')`;
+    const expdParams = [];
+    if (tenantScope !== null) {
+      expdSql += " AND tenant_id = ?";
+      expdParams.push(tenantScope);
+    }
+    const expiredRow = await queryOne(expdSql, expdParams);
     const expiredCount = expiredRow?.cnt || 0;
 
-    const purchRow = await queryOne(`SELECT COALESCE(SUM(grand_total), 0) AS val FROM purchases WHERE ${purchaseDateCondition}`, queryParams);
+    let purchSql = `SELECT COALESCE(SUM(grand_total), 0) AS val FROM purchases WHERE ${purchaseDateCondition}`;
+    const purchParams = [...queryParams];
+    if (tenantScope !== null) {
+      purchSql += " AND tenant_id = ?";
+      purchParams.push(tenantScope);
+    }
+    const purchRow = await queryOne(purchSql, purchParams);
     const totalPurchases = purchRow?.val || 0;
 
-    const expRow = await queryOne(`SELECT COALESCE(SUM(amount), 0) AS val FROM expenses WHERE ${expenseDateCondition}`, queryParams);
+    let expSql = `SELECT COALESCE(SUM(amount), 0) AS val FROM expenses WHERE ${expenseDateCondition}`;
+    const expParams = [...queryParams];
+    if (tenantScope !== null) {
+      expSql += " AND tenant_id = ?";
+      expParams.push(tenantScope);
+    }
+    const expRow = await queryOne(expSql, expParams);
     const totalExpenses = expRow?.val || 0;
 
-    const topProducts = await queryAll(`
+    let topProdSql = `
       SELECT p.name, SUM(si.qty) AS total_qty_sold, SUM(si.total_amount) AS total_revenue
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
       JOIN products p ON si.product_id = p.id
       WHERE s.status = 'COMPLETED' AND ${dateCondition}
-      GROUP BY p.id
-      ORDER BY total_revenue DESC LIMIT 5
-    `, queryParams);
+    `;
+    const topProdParams = [...queryParams];
+    if (tenantScope !== null) {
+      topProdSql += " AND s.tenant_id = ?";
+      topProdParams.push(tenantScope);
+    }
+    topProdSql += ` GROUP BY p.id ORDER BY total_revenue DESC LIMIT 5`;
+    const topProducts = await queryAll(topProdSql, topProdParams);
 
-    const recentSales = await queryAll(`
+    let recentSalesSql = `
       SELECT s.id, s.invoice_no, s.sale_date, s.grand_total, s.payment_status, c.name AS customer_name
       FROM sales s
       LEFT JOIN customers c ON s.customer_id = c.id
-      ORDER BY s.sale_date DESC LIMIT 10
-    `);
+      WHERE 1=1
+    `;
+    const recentSalesParams = [];
+    if (tenantScope !== null) {
+      recentSalesSql += " AND s.tenant_id = ?";
+      recentSalesParams.push(tenantScope);
+    }
+    recentSalesSql += ` ORDER BY s.sale_date DESC LIMIT 10`;
+    const recentSales = await queryAll(recentSalesSql, recentSalesParams);
 
     return res.json({
       success: true,
@@ -157,16 +218,24 @@ router.get('/dashboard', requirePermission('reports', 'view'), async (req, res) 
 // Today's Sales Specific Detailed Report
 router.get('/todays-sales', requirePermission('reports', 'view'), async (req, res) => {
   try {
-    const sales = await queryAll(`
+    const tenantScope = getTenantScope(req);
+
+    let salesSql = `
       SELECT s.*, c.name AS customer_name, c.mobile AS customer_mobile, u.full_name AS cashier_name
       FROM sales s
       LEFT JOIN customers c ON s.customer_id = c.id
       LEFT JOIN users u ON s.cashier_id = u.id
       WHERE DATE(s.sale_date) = DATE('now')
-      ORDER BY s.sale_date DESC
-    `);
+    `;
+    const salesParams = [];
+    if (tenantScope !== null) {
+      salesSql += ' AND s.tenant_id = ?';
+      salesParams.push(tenantScope);
+    }
+    salesSql += ' ORDER BY s.sale_date DESC';
+    const sales = await queryAll(salesSql, salesParams);
 
-    const summary = await queryOne(`
+    let summarySql = `
       SELECT 
         COUNT(id) AS total_bills,
         COALESCE(SUM(grand_total), 0) AS total_sales,
@@ -176,23 +245,41 @@ router.get('/todays-sales', requirePermission('reports', 'view'), async (req, re
         COALESCE(SUM(due_amount), 0) AS total_due
       FROM sales
       WHERE DATE(sale_date) = DATE('now') AND status = 'COMPLETED'
-    `);
+    `;
+    const summaryParams = [];
+    if (tenantScope !== null) {
+      summarySql += ' AND tenant_id = ?';
+      summaryParams.push(tenantScope);
+    }
+    const summary = await queryOne(summarySql, summaryParams);
 
-    const paymentBreakdown = await queryAll(`
+    let paySql = `
       SELECT sp.payment_method, COALESCE(SUM(sp.amount), 0) AS total_amount
       FROM sale_payments sp
       JOIN sales s ON sp.sale_id = s.id
       WHERE DATE(s.sale_date) = DATE('now') AND s.status = 'COMPLETED'
-      GROUP BY sp.payment_method
-    `);
+    `;
+    const payParams = [];
+    if (tenantScope !== null) {
+      paySql += ' AND s.tenant_id = ?';
+      payParams.push(tenantScope);
+    }
+    paySql += ' GROUP BY sp.payment_method';
+    const paymentBreakdown = await queryAll(paySql, payParams);
 
-    const cashierBreakdown = await queryAll(`
+    let cshSql = `
       SELECT u.full_name AS cashier_name, COUNT(s.id) AS bill_count, COALESCE(SUM(s.grand_total), 0) AS total_sales
       FROM sales s
       LEFT JOIN users u ON s.cashier_id = u.id
       WHERE DATE(s.sale_date) = DATE('now') AND s.status = 'COMPLETED'
-      GROUP BY s.cashier_id
-    `);
+    `;
+    const cshParams = [];
+    if (tenantScope !== null) {
+      cshSql += ' AND s.tenant_id = ?';
+      cshParams.push(tenantScope);
+    }
+    cshSql += ' GROUP BY s.cashier_id';
+    const cashierBreakdown = await queryAll(cshSql, cshParams);
 
     return res.json({ success: true, summary, sales, paymentBreakdown, cashierBreakdown });
   } catch (err) {
@@ -204,6 +291,7 @@ router.get('/todays-sales', requirePermission('reports', 'view'), async (req, re
 router.get('/sales', requirePermission('reports', 'view'), async (req, res) => {
   try {
     const { start_date, end_date, payment_status, customer_id, search } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT s.*, c.name AS customer_name, c.mobile AS customer_mobile, u.full_name AS cashier_name
@@ -213,6 +301,11 @@ router.get('/sales', requirePermission('reports', 'view'), async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND s.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (start_date) {
       sql += ` AND DATE(s.sale_date) >= ?`;
@@ -256,6 +349,12 @@ router.get('/sales', requirePermission('reports', 'view'), async (req, res) => {
       WHERE 1=1
     `;
     const totParams = [];
+
+    if (tenantScope !== null) {
+      totSql += ` AND s.tenant_id = ?`;
+      totParams.push(tenantScope);
+    }
+
     if (start_date) {
       totSql += ' AND DATE(s.sale_date) >= ?';
       totParams.push(start_date);
@@ -277,11 +376,19 @@ router.get('/sales', requirePermission('reports', 'view'), async (req, res) => {
 router.get('/profit-loss', requirePermission('reports', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let dateCondSales = "s.status = 'COMPLETED'";
     let dateCondExp = "1=1";
     const paramsSales = [];
     const paramsExp = [];
+
+    if (tenantScope !== null) {
+      dateCondSales += " AND s.tenant_id = ?";
+      dateCondExp += " AND tenant_id = ?";
+      paramsSales.push(tenantScope);
+      paramsExp.push(tenantScope);
+    }
 
     if (start_date) {
       dateCondSales += " AND DATE(s.sale_date) >= ?";
@@ -303,7 +410,6 @@ router.get('/profit-loss', requirePermission('reports', 'view'), async (req, res
       FROM sales s WHERE ${dateCondSales}
     `, paramsSales);
 
-    // Estimate COGS (Cost of Goods Sold) based on batch purchase rates
     const cogsData = await queryOne(`
       SELECT COALESCE(SUM(si.qty * pb.purchase_rate), 0) AS total_cogs
       FROM sale_items si
@@ -344,55 +450,88 @@ router.get('/profit-loss', requirePermission('reports', 'view'), async (req, res
 router.get('/export/:type', requirePermission('reports', 'export'), async (req, res) => {
   try {
     const type = req.params.type;
+    const tenantScope = getTenantScope(req);
 
     let filename = `KrushiPOS_${type}_${new Date().toISOString().split('T')[0]}.csv`;
     let csvContent = '';
 
     if (type === 'todays_sales') {
-      const rows = await queryAll(`
+      let sql = `
         SELECT s.invoice_no, s.sale_date, COALESCE(c.name, 'Walk-in') AS customer, s.grand_total, s.total_tax, s.paid_amount, s.due_amount, s.payment_status
-        FROM sales s LEFT JOIN customers c ON s.customer_id = c.id WHERE DATE(s.sale_date) = DATE('now') ORDER BY s.sale_date DESC
-      `);
+        FROM sales s LEFT JOIN customers c ON s.customer_id = c.id WHERE DATE(s.sale_date) = DATE('now')
+      `;
+      const params = [];
+      if (tenantScope !== null) {
+        sql += ' AND s.tenant_id = ?';
+        params.push(tenantScope);
+      }
+      sql += ' ORDER BY s.sale_date DESC';
+      const rows = await queryAll(sql, params);
       csvContent = 'Invoice No,Sale Date,Customer,Grand Total (Rs),Tax (Rs),Paid Amount (Rs),Due Amount (Rs),Payment Status\n';
       rows.forEach(r => {
         csvContent += `"${r.invoice_no}","${r.sale_date}","${r.customer}",${r.grand_total},${r.total_tax},${r.paid_amount},${r.due_amount},"${r.payment_status}"\n`;
       });
     } else if (type === 'sales') {
-      const rows = await queryAll(`
+      let sql = `
         SELECT s.invoice_no, s.sale_date, COALESCE(c.name, 'Walk-in') AS customer, s.grand_total, s.total_tax, s.paid_amount, s.due_amount, s.payment_status
-        FROM sales s LEFT JOIN customers c ON s.customer_id = c.id ORDER BY s.sale_date DESC
-      `);
+        FROM sales s LEFT JOIN customers c ON s.customer_id = c.id WHERE 1=1
+      `;
+      const params = [];
+      if (tenantScope !== null) {
+        sql += ' AND s.tenant_id = ?';
+        params.push(tenantScope);
+      }
+      sql += ' ORDER BY s.sale_date DESC';
+      const rows = await queryAll(sql, params);
       csvContent = 'Invoice No,Sale Date,Customer,Grand Total (Rs),Tax (Rs),Paid Amount (Rs),Due Amount (Rs),Payment Status\n';
       rows.forEach(r => {
         csvContent += `"${r.invoice_no}","${r.sale_date}","${r.customer}",${r.grand_total},${r.total_tax},${r.paid_amount},${r.due_amount},"${r.payment_status}"\n`;
       });
     } else if (type === 'inventory') {
-      const rows = await queryAll(`
+      let sql = `
         SELECT p.product_code, p.name, c.name AS category, pb.batch_no, pb.exp_date, pb.available_qty, u.symbol AS unit, pb.purchase_rate, pb.selling_rate
         FROM products p
         JOIN product_batches pb ON p.id = pb.product_id
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN units u ON p.primary_unit_id = u.id
-        ORDER BY p.name ASC, pb.exp_date ASC
-      `);
+        WHERE 1=1
+      `;
+      const params = [];
+      if (tenantScope !== null) {
+        sql += ' AND p.tenant_id = ?';
+        params.push(tenantScope);
+      }
+      sql += ' ORDER BY p.name ASC, pb.exp_date ASC';
+      const rows = await queryAll(sql, params);
       csvContent = 'Product Code,Product Name,Category,Batch No,Expiry Date,Available Qty,Unit,Purchase Rate (Rs),Selling Rate (Rs)\n';
       rows.forEach(r => {
         csvContent += `"${r.product_code}","${r.name}","${r.category || ''}","${r.batch_no}","${r.exp_date}",${r.available_qty},"${r.unit || ''}",${r.purchase_rate},${r.selling_rate}\n`;
       });
     } else if (type === 'udhar') {
-      const rows = await queryAll(`
-        SELECT name, mobile, village, taluka, customer_type, current_balance, credit_limit
-        FROM customers WHERE current_balance > 0 ORDER BY current_balance DESC
-      `);
+      let sql = `SELECT name, mobile, village, taluka, customer_type, current_balance, credit_limit FROM customers WHERE current_balance > 0`;
+      const params = [];
+      if (tenantScope !== null) {
+        sql += ' AND tenant_id = ?';
+        params.push(tenantScope);
+      }
+      sql += ' ORDER BY current_balance DESC';
+      const rows = await queryAll(sql, params);
       csvContent = 'Customer Name,Mobile,Village,Taluka,Type,Outstanding Balance (Rs),Credit Limit (Rs)\n';
       rows.forEach(r => {
         csvContent += `"${r.name}","${r.mobile}","${r.village || ''}","${r.taluka || ''}","${r.customer_type}",${r.current_balance},${r.credit_limit}\n`;
       });
     } else if (type === 'purchases') {
-      const rows = await queryAll(`
+      let sql = `
         SELECT p.invoice_no, p.supplier_invoice_no, s.company_name AS supplier, p.purchase_date, p.grand_total, p.paid_amount, p.due_amount, p.payment_status
-        FROM purchases p JOIN suppliers s ON p.supplier_id = s.id ORDER BY p.purchase_date DESC
-      `);
+        FROM purchases p JOIN suppliers s ON p.supplier_id = s.id WHERE 1=1
+      `;
+      const params = [];
+      if (tenantScope !== null) {
+        sql += ' AND p.tenant_id = ?';
+        params.push(tenantScope);
+      }
+      sql += ' ORDER BY p.purchase_date DESC';
+      const rows = await queryAll(sql, params);
       csvContent = 'Purchase Inv,Supplier Inv,Supplier Name,Date,Grand Total (Rs),Paid Amount (Rs),Due Amount (Rs),Payment Status\n';
       rows.forEach(r => {
         csvContent += `"${r.invoice_no}","${r.supplier_invoice_no || ''}","${r.supplier}","${r.purchase_date}",${r.grand_total},${r.paid_amount},${r.due_amount},"${r.payment_status}"\n`;

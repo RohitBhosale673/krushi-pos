@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/movements', requirePermission('batches', 'view'), async (req, res) => {
   try {
     const { product_id, batch_id, movement_type, limit = 100 } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT sm.*, 
@@ -23,6 +24,11 @@ router.get('/movements', requirePermission('batches', 'view'), async (req, res) 
       WHERE 1=1
     `;
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND p.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (product_id) {
       sql += ` AND sm.product_id = ?`;
@@ -52,7 +58,9 @@ router.get('/movements', requirePermission('batches', 'view'), async (req, res) 
 // Inventory Valuation Summary
 router.get('/valuation', requirePermission('reports', 'view'), async (req, res) => {
   try {
-    const summary = await queryOne(`
+    const tenantScope = getTenantScope(req);
+
+    let summarySql = `
       SELECT 
         COUNT(DISTINCT p.id) AS total_products,
         COUNT(pb.id) AS total_batches,
@@ -62,9 +70,17 @@ router.get('/valuation', requirePermission('reports', 'view'), async (req, res) 
       FROM products p
       JOIN product_batches pb ON p.id = pb.product_id
       WHERE pb.available_qty > 0 AND pb.status != 'Blocked'
-    `);
+    `;
+    const summaryParams = [];
 
-    const categoryBreakdown = await queryAll(`
+    if (tenantScope !== null) {
+      summarySql += ` AND p.tenant_id = ?`;
+      summaryParams.push(tenantScope);
+    }
+
+    const summary = await queryOne(summarySql, summaryParams);
+
+    let catSql = `
       SELECT c.name AS category_name,
              COUNT(DISTINCT p.id) AS product_count,
              COALESCE(SUM(pb.available_qty), 0) AS total_qty,
@@ -73,9 +89,18 @@ router.get('/valuation', requirePermission('reports', 'view'), async (req, res) 
       FROM categories c
       LEFT JOIN products p ON c.id = p.category_id
       LEFT JOIN product_batches pb ON p.id = pb.product_id AND pb.available_qty > 0
-      GROUP BY c.id
-      ORDER BY selling_value DESC
-    `);
+      WHERE 1=1
+    `;
+    const catParams = [];
+
+    if (tenantScope !== null) {
+      catSql += ` AND (p.tenant_id = ? OR p.tenant_id IS NULL)`;
+      catParams.push(tenantScope);
+    }
+
+    catSql += ` GROUP BY c.id ORDER BY selling_value DESC`;
+
+    const categoryBreakdown = await queryAll(catSql, catParams);
 
     return res.json({ success: true, summary, categoryBreakdown });
   } catch (err) {
@@ -86,15 +111,23 @@ router.get('/valuation', requirePermission('reports', 'view'), async (req, res) 
 // Manual Stock Adjustment or Damage Entry
 router.post('/adjust', requirePermission('inventory', 'adjust'), async (req, res) => {
   const { product_id, batch_id, type, qty_change, notes } = req.body;
+  const tenantScope = getTenantScope(req);
 
   if (!product_id || !batch_id || !type || !qty_change) {
     return res.status(400).json({ success: false, message: 'Product, Batch, Adjustment Type, and Quantity change are required.' });
   }
 
   try {
-    const batch = await queryOne('SELECT * FROM product_batches WHERE id = ?', [batch_id]);
+    let checkSql = 'SELECT * FROM product_batches WHERE id = ?';
+    const checkParams = [batch_id];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const batch = await queryOne(checkSql, checkParams);
     if (!batch) {
-      return res.status(404).json({ success: false, message: 'Selected batch does not exist.' });
+      return res.status(404).json({ success: false, message: 'Selected batch does not exist in your organization.' });
     }
 
     await transaction(async () => {
@@ -108,11 +141,9 @@ router.post('/adjust', requirePermission('inventory', 'adjust'), async (req, res
         newQty = Math.max(0, prevQty - Math.abs(qtyDelta));
         qtyDelta = -Math.abs(qtyDelta);
 
-        // Update damaged_qty column on batch
         await run('UPDATE product_batches SET damaged_qty = damaged_qty + ? WHERE id = ?', [Math.abs(qtyDelta), batch_id]);
       }
 
-      // Update available_qty
       const statusUpdate = newQty === 0 ? 'Out of Stock' : (type === 'expiry_disposal' ? 'Blocked' : batch.status);
       await run(`
         UPDATE product_batches 
@@ -120,11 +151,10 @@ router.post('/adjust', requirePermission('inventory', 'adjust'), async (req, res
         WHERE id = ?
       `, [newQty, statusUpdate, batch_id]);
 
-      // Record movement
       await run(`
-        INSERT INTO stock_movements (product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, notes, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [product_id, batch_id, type, qtyDelta, prevQty, newQty, notes || 'Manual adjustment', req.user.id]);
+        INSERT INTO stock_movements (tenant_id, product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, notes, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [batch.tenant_id, product_id, batch_id, type, qtyDelta, prevQty, newQty, notes || 'Manual adjustment', req.user.id]);
     });
 
     logAuditAction(req.user.id, 'ADJUST_STOCK', 'inventory', batch_id, { prevQty: batch.available_qty }, { type, qty_change, notes }, req);

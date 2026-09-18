@@ -5,55 +5,67 @@ import {
   DollarSign, PieChart, UserCheck, Settings, ShieldAlert, Cpu, X, ShoppingBag
 } from 'lucide-react';
 
-export default function Sidebar({ activeTab, onSelectTab, userPermissions = [], isOpen = false, onClose }) {
+export default function Sidebar({ activeTab, onSelectTab, userPermissions = [], user = null, isOpen = false, onClose }) {
   const menuGroups = [
     {
       title: 'CORE BILLING & STOCK',
       items: [
-        { id: 'dashboard', label: 'Executive Dashboard', icon: LayoutDashboard, perm: null },
-        { id: 'pos', label: 'POS Cashier Billing', icon: ShoppingCart, perm: 'pos:create', badge: 'F2', badgeType: 'shortcut' },
-        { id: 'products', label: 'Product Master', icon: Package, perm: 'products:view' },
-        { id: 'batches', label: 'Batches & FEFO', icon: Layers, perm: 'batches:view' },
-        { id: 'inventory', label: 'Stock Movement', icon: BarChart3, perm: 'batches:view' }
+        { id: 'dashboard', label: 'Executive Dashboard', icon: LayoutDashboard, perm: null, mod: null },
+        { id: 'pos', label: 'POS Cashier Billing', icon: ShoppingCart, perm: 'pos:create', mod: 'pos', badge: 'F2', badgeType: 'shortcut' },
+        { id: 'products', label: 'Product Master', icon: Package, perm: 'products:view', mod: 'products' },
+        { id: 'batches', label: 'Batches & FEFO', icon: Layers, perm: 'batches:view', mod: 'batches' },
+        { id: 'inventory', label: 'Stock Movement', icon: BarChart3, perm: 'batches:view', mod: 'inventory' }
       ]
     },
     {
       title: 'PURCHASE & VENDORS',
       items: [
-        { id: 'purchases', label: 'Purchase Entry', icon: Truck, perm: 'purchases:view' },
-        { id: 'suppliers', label: 'Suppliers & Ledger', icon: Users, perm: 'suppliers:view' }
+        { id: 'purchases', label: 'Purchase Entry', icon: Truck, perm: 'purchases:view', mod: 'purchases' },
+        { id: 'suppliers', label: 'Suppliers & Ledger', icon: Users, perm: 'suppliers:view', mod: 'suppliers' }
       ]
     },
     {
       title: 'FARMERS & CREDIT (UDHAR)',
       items: [
-        { id: 'customers', label: 'Customer Directory', icon: Users, perm: 'customers:view' },
-        { id: 'udhar', label: 'Udhar & Aging Ledger', icon: CreditCard, perm: 'udhar:view', badge: 'Alert', badgeType: 'danger' },
-        { id: 'sms', label: 'SMS Reminder Hub', icon: MessageSquare, perm: 'sms:send' }
+        { id: 'customers', label: 'Customer Directory', icon: Users, perm: 'customers:view', mod: 'customers' },
+        { id: 'udhar', label: 'Udhar & Aging Ledger', icon: CreditCard, perm: 'udhar:view', mod: 'udhar', badge: 'Alert', badgeType: 'danger' },
+        { id: 'sms', label: 'SMS Reminder Hub', icon: MessageSquare, perm: 'sms:send', mod: 'sms' }
       ]
     },
     {
       title: 'RETURNS & CASH FLOW',
       items: [
-        { id: 'sales_returns', label: 'Sales Returns', icon: RotateCcw, perm: 'returns:sales_return' },
-        { id: 'purchase_returns', label: 'Purchase Returns', icon: Undo2, perm: 'returns:purchase_return' },
-        { id: 'expenses', label: 'Store Expenses', icon: DollarSign, perm: 'expenses:manage' }
+        { id: 'sales_returns', label: 'Sales Returns', icon: RotateCcw, perm: 'returns:sales_return', mod: 'returns' },
+        { id: 'purchase_returns', label: 'Purchase Returns', icon: Undo2, perm: 'returns:purchase_return', mod: 'returns' },
+        { id: 'expenses', label: 'Store Expenses', icon: DollarSign, perm: 'expenses:manage', mod: 'expenses' }
       ]
     },
     {
       title: 'MANAGEMENT & AUDIT',
       items: [
-        { id: 'reports', label: 'Reports & GST Analytics', icon: PieChart, perm: 'reports:view' },
-        { id: 'users', label: 'Users & Roles', icon: UserCheck, perm: 'users:manage' },
-        { id: 'settings', label: 'Business Settings', icon: Settings, perm: 'settings:manage' },
-        { id: 'audit', label: 'Security Audit Logs', icon: ShieldAlert, perm: 'audit:view' }
+        { id: 'reports', label: 'Reports & GST Analytics', icon: PieChart, perm: 'reports:view', mod: 'reports' },
+        { id: 'users', label: 'Users & Roles', icon: UserCheck, perm: 'users:manage', mod: 'users' },
+        { id: 'settings', label: 'Business Settings', icon: Settings, perm: 'settings:manage', mod: 'settings' },
+        { id: 'audit', label: 'Security Audit Logs', icon: ShieldAlert, perm: 'audit:view', mod: 'audit' }
       ]
     }
   ];
 
-  const hasPerm = (permStr) => {
-    if (!permStr) return true;
-    return userPermissions.includes(permStr) || userPermissions.includes('all');
+  const hasPerm = (item) => {
+    if (!item) return true;
+    // 1. If Super Admin, allow all
+    if (user?.is_super_admin) return true;
+
+    // 2. Check tenant allowed modules
+    if (item.mod && user?.tenant?.allowed_modules) {
+      if (!user.tenant.allowed_modules.includes(item.mod)) {
+        return false;
+      }
+    }
+
+    // 3. Check user RBAC permissions
+    if (!item.perm) return true;
+    return userPermissions.includes(item.perm) || userPermissions.includes('all');
   };
 
   const handleItemClick = (id) => {
@@ -104,7 +116,7 @@ export default function Sidebar({ activeTab, onSelectTab, userPermissions = [], 
               </p>
               <div className="space-y-0.5">
               {group.items.map((item) => {
-                if (!hasPerm(item.perm)) return null;
+                if (!hasPerm(item)) return null;
                 const Icon = item.icon;
                 const isActive = activeTab === item.id;
                 return (

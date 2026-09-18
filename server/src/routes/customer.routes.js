@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/', requirePermission('customers', 'view'), async (req, res) => {
   try {
     const { search, village, taluka, customer_type } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT c.*,
@@ -18,6 +19,11 @@ router.get('/', requirePermission('customers', 'view'), async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND c.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (search) {
       sql += ` AND (c.name LIKE ? OR c.mobile LIKE ? OR c.village LIKE ?)`;
@@ -53,8 +59,16 @@ router.get('/', requirePermission('customers', 'view'), async (req, res) => {
 router.get('/:id', requirePermission('customers', 'view'), async (req, res) => {
   try {
     const custId = req.params.id;
-    const customer = await queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
+    const tenantScope = getTenantScope(req);
 
+    let custSql = 'SELECT * FROM customers WHERE id = ?';
+    const custParams = [custId];
+    if (tenantScope !== null) {
+      custSql += ' AND tenant_id = ?';
+      custParams.push(tenantScope);
+    }
+
+    const customer = await queryOne(custSql, custParams);
     if (!customer) {
       return res.status(404).json({ success: false, message: 'Customer not found.' });
     }
@@ -92,9 +106,13 @@ router.post('/', requirePermission('customers', 'manage'), async (req, res) => {
   }
 
   try {
-    const existing = await queryOne('SELECT id FROM customers WHERE mobile = ?', [mobile]);
+    const tenantScope = getTenantScope(req);
+    const assignedTenantId = tenantScope !== null ? tenantScope : (req.body.tenant_id || 1);
+
+    // Enforce mobile uniqueness within tenant
+    const existing = await queryOne('SELECT id FROM customers WHERE mobile = ? AND tenant_id = ?', [mobile, assignedTenantId]);
     if (existing) {
-      return res.status(400).json({ success: false, message: 'Customer with this mobile number already exists.' });
+      return res.status(400).json({ success: false, message: 'Customer with this mobile number already exists in your organization.' });
     }
 
     let newCustId;
@@ -102,11 +120,11 @@ router.post('/', requirePermission('customers', 'manage'), async (req, res) => {
       const openBal = parseFloat(opening_balance) || 0;
       const resCust = await run(`
         INSERT INTO customers (
-          name, mobile, alt_mobile, address, village, taluka, district, state,
+          tenant_id, name, mobile, alt_mobile, address, village, taluka, district, state,
           gstin, customer_type, opening_balance, current_balance, credit_limit, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        name, mobile, alt_mobile || null, address || null, village || null, taluka || null,
+        assignedTenantId, name, mobile, alt_mobile || null, address || null, village || null, taluka || null,
         district || 'Nashik', state || 'Maharashtra', gstin || null,
         customer_type || 'Farmer', openBal, openBal, parseFloat(credit_limit) || 50000, notes || null
       ]);
@@ -115,13 +133,13 @@ router.post('/', requirePermission('customers', 'manage'), async (req, res) => {
 
       if (openBal > 0) {
         await run(`
-          INSERT INTO customer_transactions (customer_id, txn_type, amount, balance_after, payment_method, notes, user_id)
-          VALUES (?, 'SALE', ?, ?, 'Credit', 'Opening udhari balance', ?)
-        `, [newCustId, openBal, openBal, req.user.id]);
+          INSERT INTO customer_transactions (tenant_id, customer_id, txn_type, amount, balance_after, payment_method, notes, user_id)
+          VALUES (?, ?, 'SALE', ?, ?, 'Credit', 'Opening udhari balance', ?)
+        `, [assignedTenantId, newCustId, openBal, openBal, req.user.id]);
       }
     });
 
-    logAuditAction(req.user.id, 'CREATE_CUSTOMER', 'customers', newCustId, null, { name, mobile, openBal }, req);
+    logAuditAction(req.user.id, 'CREATE_CUSTOMER', 'customers', newCustId, null, { name, mobile, openBal, assignedTenantId }, req);
 
     return res.json({ success: true, message: 'Customer added successfully', customerId: newCustId });
   } catch (err) {
@@ -132,9 +150,17 @@ router.post('/', requirePermission('customers', 'manage'), async (req, res) => {
 // Update Customer
 router.put('/:id', requirePermission('customers', 'manage'), async (req, res) => {
   const custId = req.params.id;
-  try {
-    const oldCust = await queryOne('SELECT * FROM customers WHERE id = ?', [custId]);
+  const tenantScope = getTenantScope(req);
 
+  try {
+    let checkSql = 'SELECT * FROM customers WHERE id = ?';
+    const checkParams = [custId];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const oldCust = await queryOne(checkSql, checkParams);
     if (!oldCust) {
       return res.status(404).json({ success: false, message: 'Customer not found.' });
     }

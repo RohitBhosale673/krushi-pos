@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/', requirePermission('products', 'view'), async (req, res) => {
   try {
     const { search, category_id, brand_id, product_type } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT p.*, 
@@ -28,6 +29,11 @@ router.get('/', requirePermission('products', 'view'), async (req, res) => {
     `;
 
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND p.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (search) {
       sql += ` AND (p.name LIKE ? OR p.product_code LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
@@ -59,18 +65,40 @@ router.get('/', requirePermission('products', 'view'), async (req, res) => {
   }
 });
 
+// Master Data: Categories, Brands, Units
+router.get('/masters/all', requirePermission('products', 'view'), async (req, res) => {
+  try {
+    const categories = await queryAll('SELECT * FROM categories ORDER BY name ASC');
+    const brands = await queryAll('SELECT * FROM brands ORDER BY name ASC');
+    const units = await queryAll('SELECT * FROM units ORDER BY name ASC');
+    return res.json({ success: true, categories, brands, units });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // Get Single Product details including all active batches
 router.get('/:id', requirePermission('products', 'view'), async (req, res) => {
   try {
     const productId = req.params.id;
-    const product = await queryOne(`
+    const tenantScope = getTenantScope(req);
+
+    let sql = `
       SELECT p.*, c.name AS category_name, b.name AS brand_name, u.symbol AS unit_symbol
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN units u ON p.primary_unit_id = u.id
       WHERE p.id = ?
-    `, [productId]);
+    `;
+    const params = [productId];
+
+    if (tenantScope !== null) {
+      sql += ` AND p.tenant_id = ?`;
+      params.push(tenantScope);
+    }
+
+    const product = await queryOne(sql, params);
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found.' });
@@ -82,75 +110,113 @@ router.get('/:id', requirePermission('products', 'view'), async (req, res) => {
       ORDER BY exp_date ASC
     `, [productId]);
 
-    return res.json({ success: true, product, batches });
+    const stockMovements = await queryAll(`
+      SELECT sm.*, pb.batch_no, u.username
+      FROM stock_movements sm
+      LEFT JOIN product_batches pb ON sm.batch_id = pb.id
+      LEFT JOIN users u ON sm.user_id = u.id
+      WHERE sm.product_id = ?
+      ORDER BY sm.created_at DESC LIMIT 30
+    `, [productId]);
+
+    return res.json({ success: true, product, batches, stockMovements });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Create Product (with optional opening stock & batch)
+// Create New Product
 router.post('/', requirePermission('products', 'manage'), async (req, res) => {
   const {
     name, product_code, sku, barcode, category_id, brand_id, product_type,
-    primary_unit_id, purchase_price, selling_price, mrp, wholesale_price, retail_price,
-    gst_rate, hsn_code, min_stock, max_stock, reorder_level, description,
+    description, primary_unit_id, secondary_unit_id, conversion_factor,
+    purchase_price, selling_price, mrp, wholesale_price, retail_price,
+    gst_rate, hsn_code, min_stock, max_stock, reorder_level,
     opening_stock, batch_no, exp_date
   } = req.body;
 
   if (!name || !product_code || !product_type || !primary_unit_id) {
-    return res.status(400).json({ success: false, message: 'Name, Product Code, Type, and Unit are required.' });
+    return res.status(400).json({
+      success: false,
+      message: 'Product Name, Product Code, Product Type, and Primary Unit are required.'
+    });
   }
 
   try {
-    const existingCode = await queryOne('SELECT id FROM products WHERE product_code = ?', [product_code]);
-    if (existingCode) {
-      return res.status(400).json({ success: false, message: 'Product code already exists.' });
+    const tenantScope = getTenantScope(req);
+    const assignedTenantId = tenantScope !== null ? tenantScope : (req.body.tenant_id || 1);
+
+    // Enforce Tenant Product Catalog Quota
+    if (req.user.tenant && req.user.tenant.max_products) {
+      const prodCountRow = await queryOne('SELECT COUNT(*) AS cnt FROM products WHERE tenant_id = ?', [assignedTenantId]);
+      const currentCount = prodCountRow?.cnt || 0;
+      if (currentCount >= req.user.tenant.max_products) {
+        return res.status(400).json({
+          success: false,
+          message: `Product limit reached (${currentCount} / ${req.user.tenant.max_products} products in catalog). Contact Super Admin to upgrade.`
+        });
+      }
     }
 
-    const cleanSku = (sku && String(sku).trim() !== '') ? String(sku).trim() : null;
-    const cleanBarcode = (barcode && String(barcode).trim() !== '') ? String(barcode).trim() : null;
-    const cleanCatId = (category_id && String(category_id).trim() !== '') ? parseInt(category_id) : null;
-    const cleanBrandId = (brand_id && String(brand_id).trim() !== '') ? parseInt(brand_id) : null;
-    const cleanUnitId = (primary_unit_id && String(primary_unit_id).trim() !== '') ? parseInt(primary_unit_id) : 1;
-    const cleanHsn = (hsn_code && String(hsn_code).trim() !== '') ? String(hsn_code).trim() : null;
-    const cleanDesc = (description && String(description).trim() !== '') ? String(description).trim() : null;
-    const parsedOpeningStock = parseFloat(opening_stock) || 0;
+    const existing = await queryOne('SELECT id FROM products WHERE product_code = ? AND tenant_id = ?', [product_code.trim(), assignedTenantId]);
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'Product code already exists in your organization.' });
+    }
 
-    let newProdId = null;
+    let newProdId;
+    const parsedOpeningStock = parseFloat(opening_stock) || 0;
 
     await transaction(async () => {
       const resProd = await run(`
         INSERT INTO products (
-          name, product_code, sku, barcode, category_id, brand_id, product_type,
-          primary_unit_id, purchase_price, selling_price, mrp, wholesale_price, retail_price,
-          gst_rate, hsn_code, min_stock, max_stock, reorder_level, description
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tenant_id, name, product_code, sku, barcode, category_id, brand_id, product_type,
+          description, primary_unit_id, secondary_unit_id, conversion_factor,
+          purchase_price, selling_price, mrp, wholesale_price, retail_price,
+          gst_rate, hsn_code, min_stock, max_stock, reorder_level, is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `, [
-        name.trim(), product_code.trim(), cleanSku, cleanBarcode, cleanCatId, cleanBrandId, product_type,
-        cleanUnitId, purchase_price || 0, selling_price || 0, mrp || 0,
-        wholesale_price || selling_price || 0, retail_price || selling_price || 0,
-        gst_rate || 0, cleanHsn, min_stock || 10, max_stock || 1000, reorder_level || 20, cleanDesc
+        assignedTenantId,
+        name.trim(),
+        product_code.trim(),
+        sku ? sku.trim() : null,
+        barcode ? barcode.trim() : null,
+        category_id ? parseInt(category_id) : null,
+        brand_id ? parseInt(brand_id) : null,
+        product_type,
+        description || null,
+        parseInt(primary_unit_id),
+        secondary_unit_id ? parseInt(secondary_unit_id) : null,
+        parseFloat(conversion_factor) || 1.0,
+        parseFloat(purchase_price) || 0,
+        parseFloat(selling_price) || 0,
+        parseFloat(mrp) || 0,
+        wholesale_price ? parseFloat(wholesale_price) : (parseFloat(selling_price) || 0),
+        retail_price ? parseFloat(retail_price) : (parseFloat(selling_price) || 0),
+        parseFloat(gst_rate) || 0,
+        hsn_code ? hsn_code.trim() : null,
+        parseFloat(min_stock) || 10,
+        parseFloat(max_stock) || 1000,
+        parseFloat(reorder_level) || 20
       ]);
 
       newProdId = resProd.lastInsertRowid;
 
-      // If opening stock is specified, create initial active batch and stock movement log
       if (parsedOpeningStock > 0) {
         const cleanBatchNo = (batch_no && String(batch_no).trim() !== '')
           ? String(batch_no).trim()
           : `BATCH-${Date.now().toString().slice(-6)}`;
-
         const defaultExpDate = (exp_date && String(exp_date).trim() !== '')
           ? String(exp_date).trim()
           : new Date(Date.now() + 365 * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
         const resBatch = await run(`
           INSERT INTO product_batches (
-            product_id, batch_no, mfg_date, exp_date,
+            tenant_id, product_id, batch_no, mfg_date, exp_date,
             purchase_rate, selling_rate, mrp,
             qty_received, available_qty, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
         `, [
+          assignedTenantId,
           newProdId,
           cleanBatchNo,
           new Date().toISOString().split('T')[0],
@@ -164,11 +230,12 @@ router.post('/', requirePermission('products', 'manage'), async (req, res) => {
 
         await run(`
           INSERT INTO stock_movements (
-            product_id, batch_id, movement_type,
+            tenant_id, product_id, batch_id, movement_type,
             qty_change, previous_qty, new_qty,
             reference_type, reference_id, notes, user_id
-          ) VALUES (?, ?, 'opening_stock', ?, 0, ?, 'product_creation', ?, 'Initial opening stock entry', ?)
+          ) VALUES (?, ?, ?, 'opening_stock', ?, 0, ?, 'product_creation', ?, 'Initial opening stock entry', ?)
         `, [
+          assignedTenantId,
           newProdId,
           resBatch.lastInsertRowid,
           parsedOpeningStock,
@@ -196,9 +263,17 @@ router.post('/', requirePermission('products', 'manage'), async (req, res) => {
 // Update Product & Manage Stock
 router.put('/:id', requirePermission('products', 'manage'), async (req, res) => {
   const productId = req.params.id;
-  try {
-    const oldProduct = await queryOne('SELECT * FROM products WHERE id = ?', [productId]);
+  const tenantScope = getTenantScope(req);
 
+  try {
+    let checkSql = 'SELECT * FROM products WHERE id = ?';
+    const checkParams = [productId];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const oldProduct = await queryOne(checkSql, checkParams);
     if (!oldProduct) {
       return res.status(404).json({ success: false, message: 'Product not found.' });
     }
@@ -260,7 +335,7 @@ router.put('/:id', requirePermission('products', 'manage'), async (req, res) => 
         cleanGst, cleanHsn, cleanMinStock, cleanMaxStock, cleanReorderLevel, cleanIsActive, cleanDesc, productId
       ]);
 
-      // Sync active batch prices with updated product master selling price and MRP
+      // Sync active batch prices
       await run(`
         UPDATE product_batches
         SET selling_rate = ?, mrp = ?, purchase_rate = ?
@@ -296,11 +371,12 @@ router.put('/:id', requirePermission('products', 'manage'), async (req, res) => 
 
             await run(`
               INSERT INTO stock_movements (
-                product_id, batch_id, movement_type,
+                tenant_id, product_id, batch_id, movement_type,
                 qty_change, previous_qty, new_qty,
                 reference_type, notes, user_id
-              ) VALUES (?, ?, 'stock_adjustment', ?, ?, ?, 'product_master_edit', ?, ?)
+              ) VALUES (?, ?, ?, 'stock_adjustment', ?, ?, ?, 'product_master_edit', ?, ?)
             `, [
+              oldProduct.tenant_id,
               productId,
               activeBatch.id,
               diff,
@@ -310,15 +386,15 @@ router.put('/:id', requirePermission('products', 'manage'), async (req, res) => 
               req.user.id
             ]);
           } else {
-            // No active batch exists, create a default active batch with the specified stock
             const defaultExp = new Date(Date.now() + 365 * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
             const resBatch = await run(`
               INSERT INTO product_batches (
-                product_id, batch_no, mfg_date, exp_date,
+                tenant_id, product_id, batch_no, mfg_date, exp_date,
                 purchase_rate, selling_rate, mrp,
                 qty_received, available_qty, status
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
             `, [
+              oldProduct.tenant_id,
               productId,
               `BATCH-${Date.now().toString().slice(-6)}`,
               new Date().toISOString().split('T')[0],
@@ -332,11 +408,12 @@ router.put('/:id', requirePermission('products', 'manage'), async (req, res) => 
 
             await run(`
               INSERT INTO stock_movements (
-                product_id, batch_id, movement_type,
+                tenant_id, product_id, batch_id, movement_type,
                 qty_change, previous_qty, new_qty,
                 reference_type, notes, user_id
-              ) VALUES (?, ?, 'stock_adjustment', ?, 0, ?, 'product_master_edit', ?, ?)
+              ) VALUES (?, ?, ?, 'stock_adjustment', ?, 0, ?, 'product_master_edit', ?, ?)
             `, [
+              oldProduct.tenant_id,
               productId,
               resBatch.lastInsertRowid,
               targetStock,
@@ -361,9 +438,17 @@ router.put('/:id', requirePermission('products', 'manage'), async (req, res) => 
 router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async (req, res) => {
   const productId = req.params.id;
   const { new_stock, qty_change, adjustment_type = 'set', notes, batch_no, exp_date } = req.body;
+  const tenantScope = getTenantScope(req);
 
   try {
-    const product = await queryOne('SELECT * FROM products WHERE id = ?', [productId]);
+    let checkSql = 'SELECT * FROM products WHERE id = ?';
+    const checkParams = [productId];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const product = await queryOne(checkSql, checkParams);
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found.' });
     }
@@ -406,11 +491,12 @@ router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async 
 
         await run(`
           INSERT INTO stock_movements (
-            product_id, batch_id, movement_type,
+            tenant_id, product_id, batch_id, movement_type,
             qty_change, previous_qty, new_qty,
             reference_type, notes, user_id
-          ) VALUES (?, ?, 'stock_adjustment', ?, ?, ?, 'quick_stock_adjust', ?, ?)
+          ) VALUES (?, ?, ?, 'stock_adjustment', ?, ?, ?, 'quick_stock_adjust', ?, ?)
         `, [
+          product.tenant_id,
           productId,
           activeBatch.id,
           diff,
@@ -420,7 +506,6 @@ router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async 
           req.user.id
         ]);
       } else {
-        // Create new active batch
         const defaultBatchNo = (batch_no && String(batch_no).trim() !== '')
           ? String(batch_no).trim()
           : `BATCH-${Date.now().toString().slice(-6)}`;
@@ -430,11 +515,12 @@ router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async 
 
         const resBatch = await run(`
           INSERT INTO product_batches (
-            product_id, batch_no, mfg_date, exp_date,
+            tenant_id, product_id, batch_no, mfg_date, exp_date,
             purchase_rate, selling_rate, mrp,
             qty_received, available_qty, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
         `, [
+          product.tenant_id,
           productId,
           defaultBatchNo,
           new Date().toISOString().split('T')[0],
@@ -448,11 +534,12 @@ router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async 
 
         await run(`
           INSERT INTO stock_movements (
-            product_id, batch_id, movement_type,
+            tenant_id, product_id, batch_id, movement_type,
             qty_change, previous_qty, new_qty,
             reference_type, notes, user_id
-          ) VALUES (?, ?, 'stock_adjustment', ?, 0, ?, 'quick_stock_adjust', ?, ?)
+          ) VALUES (?, ?, ?, 'stock_adjustment', ?, 0, ?, 'quick_stock_adjust', ?, ?)
         `, [
+          product.tenant_id,
           productId,
           resBatch.lastInsertRowid,
           finalStock,
@@ -470,18 +557,6 @@ router.post('/:id/adjust-stock', requirePermission('products', 'manage'), async 
       message: `Stock for ${product.name} updated to ${finalStock} units.`,
       newStock: finalStock
     });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Master Data: Categories, Brands, Units
-router.get('/masters/all', requirePermission('products', 'view'), async (req, res) => {
-  try {
-    const categories = await queryAll('SELECT * FROM categories ORDER BY name ASC');
-    const brands = await queryAll('SELECT * FROM brands ORDER BY name ASC');
-    const units = await queryAll('SELECT * FROM units ORDER BY name ASC');
-    return res.json({ success: true, categories, brands, units });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

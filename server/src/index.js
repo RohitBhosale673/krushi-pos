@@ -26,6 +26,7 @@ import expenseRoutes from './routes/expense.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import settingRoutes from './routes/setting.routes.js';
 import auditRoutes from './routes/audit.routes.js';
+import tenantRoutes from './routes/tenant.routes.js';
 
 dotenv.config();
 
@@ -104,6 +105,7 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/settings', settingRoutes);
 app.use('/api/audit', auditRoutes);
+app.use('/api/tenants', tenantRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

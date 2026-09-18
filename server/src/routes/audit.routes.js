@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll } from '../db/connection.js';
-import { authenticateToken, requirePermission } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/', requirePermission('audit', 'view'), async (req, res) => {
   try {
     const { module, user_id, action, limit = 100 } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT al.*, u.username AS user_name, u.full_name
@@ -18,6 +19,11 @@ router.get('/', requirePermission('audit', 'view'), async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
+
+    if (tenantScope !== null) {
+      sql += ` AND al.tenant_id = ?`;
+      params.push(tenantScope);
+    }
 
     if (module) {
       sql += ` AND al.module = ?`;

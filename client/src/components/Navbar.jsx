@@ -1,13 +1,36 @@
 import React, { useState, useEffect } from 'react';
-import { ShoppingBag, LogOut, User, Zap, ShieldCheck, Clock, CheckCircle2, Store, Radio, Menu } from 'lucide-react';
+import { ShoppingBag, LogOut, User, Zap, ShieldCheck, Clock, CheckCircle2, Store, Radio, Menu, Building2, ChevronDown } from 'lucide-react';
+import { apiRequest, getActiveTenantId, setActiveTenantId } from '../api';
 
 export default function Navbar({ user, onNavigate, onLogout, onToggleSidebar }) {
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [tenantsList, setTenantsList] = useState([]);
+  const [selectedTenant, setSelectedTenant] = useState(getActiveTenantId() || '');
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Fetch tenants if user is Super Admin
+  useEffect(() => {
+    if (user?.is_super_admin) {
+      apiRequest('/tenants')
+        .then(res => {
+          if (res.success) {
+            setTenantsList(res.tenants || []);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [user]);
+
+  const handleTenantChange = (e) => {
+    const val = e.target.value;
+    setSelectedTenant(val);
+    setActiveTenantId(val ? val : null);
+    window.location.reload();
+  };
 
   const formatTime = (date) => {
     return date.toLocaleTimeString('en-IN', {
@@ -26,6 +49,8 @@ export default function Navbar({ user, onNavigate, onLogout, onToggleSidebar }) 
       year: 'numeric'
     });
   };
+
+  const storeDisplayName = user?.tenant?.name || 'Krushi Seva Kendra';
 
   return (
     <header className="bg-slate-950 text-white border-b border-slate-800/80 sticky top-0 z-40 px-3 sm:px-4 py-2 flex items-center justify-between shadow-lg select-none">
@@ -53,24 +78,49 @@ export default function Navbar({ user, onNavigate, onLogout, onToggleSidebar }) 
                 Krushi<span className="text-emerald-400">POS</span>
               </span>
               <span className="hidden xs:inline-block text-[9px] font-bold px-1.5 py-0.2 bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 rounded uppercase tracking-wider">
-                Enterprise
+                {user?.is_super_admin ? 'Super Admin' : (user?.tenant?.subscription_tier || 'Enterprise')}
               </span>
             </div>
             <p className="text-[10px] text-slate-400 hidden sm:block">Agricultural Retail ERP & Billing</p>
           </div>
         </div>
 
-        {/* Store & Terminal Station Pill */}
+        {/* Store & Organization Scope Pill */}
         <div className="hidden lg:flex items-center gap-2 ml-3 pl-3 border-l border-slate-800 text-xs text-slate-400">
-          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-lg">
-            <Store className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="font-medium text-slate-200">Krushi Seva Kendra</span>
-            <span className="text-slate-600">•</span>
-            <span className="text-[11px] font-mono text-emerald-400 font-semibold">Terminal #01</span>
-          </div>
+          {user?.is_super_admin ? (
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 px-2 py-0.5 rounded-lg">
+              <Building2 className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-[11px] font-bold text-slate-400">Store Scope:</span>
+              <select
+                value={selectedTenant}
+                onChange={handleTenantChange}
+                className="bg-transparent text-emerald-400 font-bold text-xs outline-none cursor-pointer pr-1"
+                title="Super Admin Tenant Switcher"
+              >
+                <option value="" className="bg-slate-900 text-white">🌐 System-Wide (All Stores)</option>
+                {tenantsList.map(t => (
+                  <option key={t.id} value={t.id} className="bg-slate-900 text-white">
+                    🏪 {t.name} ({t.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-lg">
+              <Store className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="font-semibold text-slate-200">{storeDisplayName}</span>
+              {user?.tenant?.code && (
+                <>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-[11px] font-mono text-emerald-400 font-bold">{user.tenant.code}</span>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded-full">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="font-semibold">Local Engine Ready</span>
+            <span className="font-semibold">Tenant Isolated</span>
           </div>
         </div>
       </div>
@@ -116,7 +166,7 @@ export default function Navbar({ user, onNavigate, onLogout, onToggleSidebar }) 
                 </p>
                 <div className="flex items-center gap-1 text-[9px] text-emerald-400 font-bold uppercase tracking-wide">
                   <ShieldCheck className="w-2.5 h-2.5" />
-                  <span>{user.roles?.[0] || 'Cashier'}</span>
+                  <span>{user.roles?.[0] || 'User'}</span>
                 </div>
               </div>
             </div>

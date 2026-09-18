@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -9,24 +9,42 @@ router.use(authenticateToken);
 // Udhar Dashboard Summary & Aging Buckets
 router.get('/summary', requirePermission('udhar', 'view'), async (req, res) => {
   try {
-    const summary = await queryOne(`
+    const tenantScope = getTenantScope(req);
+
+    let summarySql = `
       SELECT 
         COUNT(id) AS total_debtors,
         COALESCE(SUM(current_balance), 0) AS total_outstanding_udhari,
         COALESCE(SUM(credit_limit), 0) AS total_credit_limit
       FROM customers
       WHERE current_balance > 0
-    `);
+    `;
+    const summaryParams = [];
 
-    // Calculate Aging Buckets using customer transaction dates
-    const customers = await queryAll(`
-      SELECT c.id, c.name, c.mobile, c.village, c.taluka, c.customer_type, c.current_balance, c.credit_limit,
+    if (tenantScope !== null) {
+      summarySql += ` AND tenant_id = ?`;
+      summaryParams.push(tenantScope);
+    }
+
+    const summary = await queryOne(summarySql, summaryParams);
+
+    let custSql = `
+      SELECT c.id, c.tenant_id, c.name, c.mobile, c.village, c.taluka, c.customer_type, c.current_balance, c.credit_limit,
              (SELECT MAX(created_at) FROM customer_transactions WHERE customer_id = c.id AND txn_type = 'SALE') AS last_sale_date,
              CAST((JULIANDAY('now') - JULIANDAY(COALESCE((SELECT MAX(created_at) FROM customer_transactions WHERE customer_id = c.id AND txn_type = 'SALE'), c.created_at))) AS INTEGER) AS days_outstanding
       FROM customers c
       WHERE c.current_balance > 0
-      ORDER BY c.current_balance DESC
-    `);
+    `;
+    const custParams = [];
+
+    if (tenantScope !== null) {
+      custSql += ` AND c.tenant_id = ?`;
+      custParams.push(tenantScope);
+    }
+
+    custSql += ` ORDER BY c.current_balance DESC`;
+
+    const customers = await queryAll(custSql, custParams);
 
     const agingBuckets = {
       current: 0,
@@ -72,15 +90,23 @@ router.get('/summary', requirePermission('udhar', 'view'), async (req, res) => {
 // Receive Udhar Payment Collection
 router.post('/collect', requirePermission('udhar', 'collect'), async (req, res) => {
   const { customer_id, amount, payment_method, txn_ref, notes } = req.body;
+  const tenantScope = getTenantScope(req);
 
   if (!customer_id || !amount || parseFloat(amount) <= 0) {
     return res.status(400).json({ success: false, message: 'Valid Customer ID and Payment Amount are required.' });
   }
 
   try {
-    const customer = await queryOne('SELECT * FROM customers WHERE id = ?', [customer_id]);
+    let checkSql = 'SELECT * FROM customers WHERE id = ?';
+    const checkParams = [customer_id];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const customer = await queryOne(checkSql, checkParams);
     if (!customer) {
-      return res.status(404).json({ success: false, message: 'Customer not found.' });
+      return res.status(404).json({ success: false, message: 'Customer not found in your organization.' });
     }
 
     const payAmount = parseFloat(amount);
@@ -92,10 +118,10 @@ router.post('/collect', requirePermission('udhar', 'collect'), async (req, res) 
 
       await run(`
         INSERT INTO customer_transactions (
-          customer_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id
-        ) VALUES (?, 'PAYMENT', ?, ?, ?, 'receipt', ?, ?, ?)
+          tenant_id, customer_id, txn_type, amount, balance_after, payment_method, ref_type, ref_id, notes, user_id
+        ) VALUES (?, ?, 'PAYMENT', ?, ?, ?, 'receipt', ?, ?, ?)
       `, [
-        customer_id, payAmount, newBalance, payment_method || 'Cash', txn_ref || null,
+        customer.tenant_id, customer_id, payAmount, newBalance, payment_method || 'Cash', txn_ref || null,
         notes || 'Udhar collection payment', req.user.id
       ]);
 
@@ -103,9 +129,9 @@ router.post('/collect', requirePermission('udhar', 'collect'), async (req, res) 
       const unpaidSales = await queryAll(`
         SELECT id, due_amount, paid_amount 
         FROM sales 
-        WHERE customer_id = ? AND due_amount > 0 
+        WHERE customer_id = ? AND due_amount > 0 AND tenant_id = ?
         ORDER BY sale_date ASC
-      `, [customer_id]);
+      `, [customer_id, customer.tenant_id]);
 
       let remainingPayment = payAmount;
       for (const sale of unpaidSales) {

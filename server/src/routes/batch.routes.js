@@ -1,6 +1,6 @@
 import express from 'express';
 import { queryOne, queryAll, run, transaction } from '../db/connection.js';
-import { authenticateToken, requirePermission, logAuditAction } from '../middleware/auth.js';
+import { authenticateToken, requirePermission, logAuditAction, getTenantScope } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.get('/', requirePermission('batches', 'view'), async (req, res) => {
   try {
     const { product_id, expiry_filter, status, search } = req.query;
+    const tenantScope = getTenantScope(req);
 
     let sql = `
       SELECT pb.*, 
@@ -27,6 +28,11 @@ router.get('/', requirePermission('batches', 'view'), async (req, res) => {
 
     const params = [];
 
+    if (tenantScope !== null) {
+      sql += ` AND pb.tenant_id = ?`;
+      params.push(tenantScope);
+    }
+
     if (product_id) {
       sql += ` AND pb.product_id = ?`;
       params.push(product_id);
@@ -43,7 +49,6 @@ router.get('/', requirePermission('batches', 'view'), async (req, res) => {
       params.push(term, term, term);
     }
 
-    // Expiry filters: 7, 30, 60, 90 days, expired
     if (expiry_filter === 'expired') {
       sql += ` AND pb.exp_date < DATE('now')`;
     } else if (expiry_filter === '7_days') {
@@ -56,7 +61,6 @@ router.get('/', requirePermission('batches', 'view'), async (req, res) => {
       sql += ` AND pb.exp_date >= DATE('now') AND pb.exp_date <= DATE('now', '+90 days')`;
     }
 
-    // FEFO Sorting: First Expiry First Out
     sql += ` ORDER BY pb.exp_date ASC`;
 
     const batches = await queryAll(sql, params);
@@ -66,104 +70,151 @@ router.get('/', requirePermission('batches', 'view'), async (req, res) => {
   }
 });
 
-// FEFO Query for POS auto allocation
-router.get('/fefo/:product_id', requirePermission('pos', 'create'), async (req, res) => {
+// Single Batch Details & Movement History
+router.get('/:id', requirePermission('batches', 'view'), async (req, res) => {
   try {
-    const productId = req.params.product_id;
+    const batchId = req.params.id;
+    const tenantScope = getTenantScope(req);
 
-    const batches = await queryAll(`
-      SELECT pb.*, u.symbol AS unit_symbol,
-             CAST((JULIANDAY(pb.exp_date) - JULIANDAY('now')) AS INTEGER) AS days_until_expiry
+    let sql = `
+      SELECT pb.*, p.name AS product_name, p.product_code, u.symbol AS unit_symbol
       FROM product_batches pb
       JOIN products p ON pb.product_id = p.id
       LEFT JOIN units u ON p.primary_unit_id = u.id
-      WHERE pb.product_id = ? AND pb.available_qty > 0 AND pb.status != 'Blocked'
-      ORDER BY pb.exp_date ASC
-    `, [productId]);
+      WHERE pb.id = ?
+    `;
+    const params = [batchId];
 
-    return res.json({ success: true, batches });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Create Batch manually
-router.post('/', requirePermission('batches', 'manage'), async (req, res) => {
-  const {
-    product_id, batch_no, mfg_date, exp_date, purchase_rate, selling_rate,
-    mrp, qty_received
-  } = req.body;
-
-  if (!product_id || !batch_no || !exp_date || purchase_rate === undefined || selling_rate === undefined || !qty_received) {
-    return res.status(400).json({ success: false, message: 'Product, Batch No, Expiry Date, Rates, and Quantity are required.' });
-  }
-
-  try {
-    const existing = await queryOne('SELECT id FROM product_batches WHERE product_id = ? AND batch_no = ?', [product_id, batch_no]);
-    if (existing) {
-      return res.status(400).json({ success: false, message: 'Batch number already exists for this product.' });
+    if (tenantScope !== null) {
+      sql += ` AND pb.tenant_id = ?`;
+      params.push(tenantScope);
     }
 
-    let batchId;
-    await transaction(async () => {
-      // Determine initial status based on expiry date
-      let status = 'Active';
-      const today = new Date().toISOString().split('T')[0];
-      if (exp_date < today) {
-        status = 'Expired';
-      }
+    const batch = await queryOne(sql, params);
 
-      const resBatch = await run(`
-        INSERT INTO product_batches (
-          product_id, batch_no, mfg_date, exp_date, purchase_rate, selling_rate, mrp,
-          qty_received, qty_sold, available_qty, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-      `, [
-        product_id, batch_no, mfg_date || null, exp_date, purchase_rate, selling_rate,
-        mrp || selling_rate, qty_received, qty_received, status
-      ]);
+    if (!batch) {
+      return res.status(404).json({ success: false, message: 'Batch not found.' });
+    }
 
-      batchId = resBatch.lastInsertRowid;
+    const movements = await queryAll(`
+      SELECT sm.*, u.username
+      FROM stock_movements sm
+      LEFT JOIN users u ON sm.user_id = u.id
+      WHERE sm.batch_id = ?
+      ORDER BY sm.created_at DESC
+    `, [batchId]);
 
-      // Log stock movement
-      await run(`
-        INSERT INTO stock_movements (product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, notes, user_id)
-        VALUES (?, ?, 'opening_stock', ?, 0, ?, 'Manual batch creation', ?)
-      `, [product_id, batchId, qty_received, qty_received, req.user.id]);
-    });
-
-    logAuditAction(req.user.id, 'CREATE_BATCH', 'batches', batchId, null, { product_id, batch_no, qty_received }, req);
-
-    return res.json({ success: true, message: 'Batch created successfully', batchId });
+    return res.json({ success: true, batch, movements });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Update Batch Status or Rates
-router.put('/:id', requirePermission('batches', 'manage'), async (req, res) => {
+// Change Batch Status (Active / Near Expiry / Expired / Out of Stock / Blocked)
+router.put('/:id/status', requirePermission('batches', 'manage'), async (req, res) => {
   const batchId = req.params.id;
-  try {
-    const oldBatch = await queryOne('SELECT * FROM product_batches WHERE id = ?', [batchId]);
+  const { status, notes } = req.body;
+  const tenantScope = getTenantScope(req);
 
+  const allowedStatuses = ['Active', 'Near Expiry', 'Expired', 'Out of Stock', 'Blocked'];
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({ success: false, message: 'Invalid batch status.' });
+  }
+
+  try {
+    let checkSql = 'SELECT * FROM product_batches WHERE id = ?';
+    const checkParams = [batchId];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const oldBatch = await queryOne(checkSql, checkParams);
     if (!oldBatch) {
       return res.status(404).json({ success: false, message: 'Batch not found.' });
     }
 
-    const { status, selling_rate, mrp, notes } = req.body;
+    await run('UPDATE product_batches SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [status, batchId]);
 
-    await run(`
-      UPDATE product_batches
-      SET status = COALESCE(?, status),
-          selling_rate = COALESCE(?, selling_rate),
-          mrp = COALESCE(?, mrp),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [status, selling_rate, mrp, batchId]);
+    logAuditAction(req.user.id, 'UPDATE_BATCH_STATUS', 'batches', batchId, oldBatch, { status, notes }, req);
 
-    logAuditAction(req.user.id, 'UPDATE_BATCH', 'batches', batchId, oldBatch, { status, selling_rate, notes }, req);
+    return res.json({ success: true, message: `Batch status changed to ${status}.` });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 
-    return res.json({ success: true, message: 'Batch updated successfully.' });
+// Manual Stock Adjustment for a specific batch (damaged, expiry disposal, correction)
+router.post('/:id/adjust', requirePermission('inventory', 'adjust'), async (req, res) => {
+  const batchId = req.params.id;
+  const { adjustment_type, qty, reason } = req.body;
+  const tenantScope = getTenantScope(req);
+
+  const validTypes = ['stock_adjustment', 'damaged', 'expiry_disposal'];
+  if (!validTypes.includes(adjustment_type)) {
+    return res.status(400).json({ success: false, message: 'Invalid adjustment type.' });
+  }
+
+  const adjustQty = parseFloat(qty);
+  if (isNaN(adjustQty) || adjustQty === 0) {
+    return res.status(400).json({ success: false, message: 'Valid non-zero quantity is required.' });
+  }
+
+  try {
+    let checkSql = 'SELECT * FROM product_batches WHERE id = ?';
+    const checkParams = [batchId];
+    if (tenantScope !== null) {
+      checkSql += ' AND tenant_id = ?';
+      checkParams.push(tenantScope);
+    }
+
+    const batch = await queryOne(checkSql, checkParams);
+    if (!batch) {
+      return res.status(404).json({ success: false, message: 'Batch not found.' });
+    }
+
+    const prevQty = batch.available_qty;
+    const newQty = prevQty + adjustQty;
+
+    if (newQty < 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Adjustment exceeds available quantity (${prevQty} available).`
+      });
+    }
+
+    let damagedInc = 0;
+    if (adjustment_type === 'damaged') {
+      damagedInc = Math.abs(adjustQty);
+    }
+
+    const newStatus = newQty === 0 ? 'Out of Stock' : (adjustment_type === 'expiry_disposal' ? 'Expired' : batch.status);
+
+    await transaction(async () => {
+      await run(`
+        UPDATE product_batches 
+        SET available_qty = ?, 
+            damaged_qty = damaged_qty + ?, 
+            status = ?, 
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [newQty, damagedInc, newStatus, batchId]);
+
+      await run(`
+        INSERT INTO stock_movements (
+          tenant_id, product_id, batch_id, movement_type, qty_change, previous_qty, new_qty, notes, user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [batch.tenant_id, batch.product_id, batchId, adjustment_type, adjustQty, prevQty, newQty, reason || 'Manual adjustment', req.user.id]);
+    });
+
+    logAuditAction(req.user.id, 'ADJUST_BATCH_STOCK', 'batches', batchId, { available_qty: prevQty }, { available_qty: newQty, reason }, req);
+
+    return res.json({
+      success: true,
+      message: 'Stock adjusted successfully',
+      previous_qty: prevQty,
+      new_qty: newQty
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

@@ -15,7 +15,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Username and password are required.' });
     }
 
-    const user = await queryOne('SELECT * FROM users WHERE username = ?', [username]);
+    const user = await queryOne('SELECT * FROM users WHERE username = ?', [username.trim()]);
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid username or password.' });
@@ -25,12 +25,13 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Account is deactivated. Contact Administrator.' });
     }
 
+    // Verify password
     const isMatch = bcrypt.compareSync(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Invalid username or password.' });
     }
 
-    // Fetch roles and permissions
+    // Fetch roles
     const rolesRows = await queryAll(`
       SELECT r.name 
       FROM roles r 
@@ -38,9 +39,37 @@ router.post('/login', async (req, res) => {
       WHERE ur.user_id = ?
     `, [user.id]);
     const roles = rolesRows.map(r => r.name);
+    const isSuperAdmin = roles.includes('Super Admin');
 
+    // Tenant check
+    let tenantData = null;
+    if (user.tenant_id) {
+      const tenant = await queryOne('SELECT * FROM tenants WHERE id = ?', [user.tenant_id]);
+      if (!tenant) {
+        return res.status(403).json({ success: false, message: 'Organization not found.' });
+      }
+      if (tenant.status !== 'active') {
+        return res.status(403).json({
+          success: false,
+          message: `Your organization '${tenant.name}' is currently ${tenant.status}. Contact Super Admin.`
+        });
+      }
+
+      let allowedModules = [];
+      let allowedReports = [];
+      try { allowedModules = JSON.parse(tenant.allowed_modules || '[]'); } catch (_) {}
+      try { allowedReports = JSON.parse(tenant.allowed_reports || '[]'); } catch (_) {}
+
+      tenantData = {
+        ...tenant,
+        allowed_modules: allowedModules,
+        allowed_reports: allowedReports
+      };
+    }
+
+    // Permissions
     let permissions = [];
-    if (roles.includes('Super Admin')) {
+    if (isSuperAdmin) {
       const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions");
       permissions = permRows.map(p => p.perm);
     } else {
@@ -52,9 +81,21 @@ router.post('/login', async (req, res) => {
         WHERE ur.user_id = ?
       `, [user.id]);
       permissions = permRows.map(p => p.perm);
+
+      // Filter by tenant allowed modules if applicable
+      if (tenantData && tenantData.allowed_modules) {
+        permissions = permissions.filter(p => {
+          const mod = p.split(':')[0];
+          return tenantData.allowed_modules.includes(mod) || mod === 'auth';
+        });
+      }
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '12h' });
+    const token = jwt.sign(
+      { id: user.id, username: user.username, tenant_id: user.tenant_id },
+      JWT_SECRET,
+      { expiresIn: '12h' }
+    );
 
     logAuditAction(user.id, 'LOGIN', 'auth', user.id, null, { username: user.username }, req);
 
@@ -64,11 +105,15 @@ router.post('/login', async (req, res) => {
       token,
       user: {
         id: user.id,
+        tenant_id: user.tenant_id,
+        parent_user_id: user.parent_user_id,
         username: user.username,
         full_name: user.full_name,
         mobile: user.mobile,
         email: user.email,
         roles,
+        is_super_admin: isSuperAdmin,
+        tenant: tenantData,
         permissions
       }
     });
@@ -81,18 +126,10 @@ router.post('/login', async (req, res) => {
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const user = await queryOne('SELECT id, username, full_name, mobile, email, status FROM users WHERE id = ?', [userId]);
-
-    const rolesRows = await queryAll(`
-      SELECT r.name 
-      FROM roles r 
-      JOIN user_roles ur ON r.id = ur.role_id 
-      WHERE ur.user_id = ?
-    `, [userId]);
-    const roles = rolesRows.map(r => r.name);
+    const isSuperAdmin = req.user.is_super_admin;
 
     let permissions = [];
-    if (roles.includes('Super Admin')) {
+    if (isSuperAdmin) {
       const permRows = await queryAll("SELECT module || ':' || action AS perm FROM permissions");
       permissions = permRows.map(p => p.perm);
     } else {
@@ -104,13 +141,29 @@ router.get('/me', authenticateToken, async (req, res) => {
         WHERE ur.user_id = ?
       `, [userId]);
       permissions = permRows.map(p => p.perm);
+
+      if (req.user.tenant && req.user.tenant.allowed_modules) {
+        permissions = permissions.filter(p => {
+          const mod = p.split(':')[0];
+          return req.user.tenant.allowed_modules.includes(mod) || mod === 'auth';
+        });
+      }
     }
 
     return res.json({
       success: true,
       user: {
-        ...user,
-        roles,
+        id: req.user.id,
+        tenant_id: req.user.tenant_id,
+        parent_user_id: req.user.parent_user_id,
+        username: req.user.username,
+        full_name: req.user.full_name,
+        mobile: req.user.mobile,
+        email: req.user.email,
+        status: req.user.status,
+        roles: req.user.roles,
+        is_super_admin: isSuperAdmin,
+        tenant: req.user.tenant,
         permissions
       }
     });
