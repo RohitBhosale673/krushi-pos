@@ -20,7 +20,7 @@ export default function InvoiceModal({ invoiceData, onClose }) {
   const handleWhatsAppSend = () => {
     const rawNumber = String(whatsappMobile || '').replace(/\D/g, '');
     if (!rawNumber || rawNumber.length < 10) {
-      setWhatsappError('Enter 10-digit mobile #');
+      setWhatsappError('Enter valid 10-digit mobile number');
       return;
     }
     setWhatsappError('');
@@ -30,7 +30,7 @@ export default function InvoiceModal({ invoiceData, onClose }) {
       : `91${rawNumber.slice(-10)}`;
 
     const itemsList = items.map((it, idx) =>
-      `${idx + 1}. *${it.product_name}*\n   Qty: ${it.qty} ${it.unit} x ₹${it.unit_price} = ₹${it.total_amount}`
+      `${idx + 1}. *${it.product_name}*\n   Qty: ${it.qty} ${it.unit || ''} x ₹${it.unit_price} = ₹${it.total_amount}`
     ).join('\n');
 
     const message = `🧾 *TAX INVOICE - ${storeSettings.store_name || 'KRUSHI SEVA KENDRA'}*
@@ -50,11 +50,18 @@ ${sale.total_discount > 0 ? `*Discount:* -₹${sale.total_discount}\n` : ''}${sa
 *Paid Amount:* ₹${sale.paid_amount}
 ${sale.due_amount > 0 ? `*DUE BALANCE (UDHAR):* ₹${sale.due_amount}\n` : ''}----------------------------------------
 GSTIN: ${storeSettings.gstin || '27AAAAA0000A1Z5'}
-${storeSettings.address || 'Main Road, APMC Market Yard, Nashik'}
-_Thank you for your business with us!_`;
+${storeSettings.address || 'Main Road, APMC Market Yard'}
+_Thank you for your business!_`;
 
-    const url = `https://api.whatsapp.com/send?phone=${cleanNumber}&text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank');
+    const url = `https://wa.me/${cleanNumber}?text=${encodeURIComponent(message)}`;
+    try {
+      const win = window.open(url, '_blank');
+      if (!win || win.closed || typeof win.closed === 'undefined') {
+        window.location.href = url;
+      }
+    } catch {
+      window.location.href = url;
+    }
   };
 
   // Convert numbers to Indian Rupees Words
@@ -91,27 +98,27 @@ _Thank you for your business with us!_`;
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[95vh] flex flex-col overflow-hidden border border-slate-700/50 animate-in fade-in zoom-in-95 duration-150">
         {/* Modal Toolbar Header */}
-        <div className="px-5 py-3 border-b flex items-center justify-between bg-slate-950 text-white shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="bg-emerald-600/20 p-2 rounded-lg border border-emerald-500/30 text-emerald-400">
-              <FileText className="w-5 h-5" />
+        <div className="px-4 sm:px-5 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950 text-white shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            <div className="bg-emerald-600/20 p-1.5 sm:p-2 rounded-lg border border-emerald-500/30 text-emerald-400">
+              <FileText className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="font-extrabold text-sm tracking-tight text-white">GST Tax Invoice #{sale.invoice_no}</h2>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800">
+                <h2 className="font-extrabold text-xs sm:text-sm tracking-tight text-white">GST Tax Invoice #{sale.invoice_no}</h2>
+                <span className="text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800">
                   {sale.payment_status}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">
-                Issued on {new Date(sale.sale_date).toLocaleString('en-IN')}
+              <p className="text-[10px] sm:text-[11px] text-slate-400">
+                {new Date(sale.sale_date).toLocaleDateString('en-IN')} {new Date(sale.sale_date).toLocaleTimeString('en-IN')}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            {/* Format Switcher */}
-            <div className="bg-slate-900 border border-slate-800 p-1 rounded-xl flex text-xs">
+          <div className="flex items-center gap-2">
+            {/* Format Switcher on desktop */}
+            <div className="hidden sm:flex bg-slate-900 border border-slate-800 p-1 rounded-xl text-xs">
               <button
                 onClick={() => setPrintFormat('a4')}
                 className={`px-3 py-1 rounded-lg font-semibold transition cursor-pointer ${
@@ -131,18 +138,53 @@ _Thank you for your business with us!_`;
             </div>
 
             <button
-              onClick={handlePrint}
-              className="btn-primary text-xs py-1.5 px-3 cursor-pointer"
+              onClick={onClose}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
+              title="Close"
+              aria-label="Close modal"
             >
-              <Printer className="w-4 h-4" />
-              <span>Print Invoice</span>
+              <X className="w-5 h-5" />
             </button>
+          </div>
+        </div>
 
-            {/* WhatsApp Direct Send Strip - ALWAYS VISIBLE */}
-            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 px-2 py-1 rounded-xl">
-              <MessageCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-              <div className="flex items-center text-xs">
-                <span className="text-slate-400 font-mono text-[11px] mr-1">+91</span>
+        {/* Dedicated Responsive Action Bar (Print & WhatsApp) */}
+        <div className="bg-slate-900 border-b border-slate-800 px-3 sm:px-5 py-2.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shrink-0 select-none">
+          {/* Mobile format switcher */}
+          <div className="flex sm:hidden bg-slate-950 border border-slate-800 p-1 rounded-xl text-xs">
+            <button
+              onClick={() => setPrintFormat('a4')}
+              className={`flex-1 py-1.5 rounded-lg font-bold text-center transition cursor-pointer ${
+                printFormat === 'a4' ? 'bg-emerald-600 text-white' : 'text-slate-400'
+              }`}
+            >
+              A4 Standard
+            </button>
+            <button
+              onClick={() => setPrintFormat('thermal')}
+              className={`flex-1 py-1.5 rounded-lg font-bold text-center transition cursor-pointer ${
+                printFormat === 'thermal' ? 'bg-emerald-600 text-white' : 'text-slate-400'
+              }`}
+            >
+              80mm Thermal
+            </button>
+          </div>
+
+          {/* Primary Print Button */}
+          <button
+            onClick={handlePrint}
+            className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white font-extrabold py-2 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-950/40 cursor-pointer active:scale-98 transition"
+          >
+            <Printer className="w-4 h-4 text-white" />
+            <span>Print Invoice / Save PDF</span>
+          </button>
+
+          {/* WhatsApp Direct Send Strip */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700/80 p-1 rounded-xl">
+              <div className="flex items-center pl-2 text-xs flex-1">
+                <MessageCircle className="w-4 h-4 text-[#25D366] mr-1 shrink-0" />
+                <span className="text-slate-400 font-mono text-[11px] mr-1 font-semibold">+91</span>
                 <input
                   type="tel"
                   maxLength={10}
@@ -152,31 +194,22 @@ _Thank you for your business with us!_`;
                     setWhatsappError('');
                   }}
                   placeholder="10-digit Mobile #"
-                  className="w-28 bg-transparent text-white font-mono text-xs focus:outline-none placeholder:text-slate-500 font-bold"
+                  className="w-full sm:w-28 bg-transparent text-white font-mono text-xs focus:outline-none placeholder:text-slate-500 font-bold"
                 />
               </div>
               <button
                 type="button"
                 onClick={handleWhatsAppSend}
-                className="bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black px-2.5 py-1 rounded-lg text-xs flex items-center gap-1 shadow-sm transition cursor-pointer"
-                title="Send bill directly to WhatsApp number"
+                className="bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer shrink-0"
+                title="Send bill directly to WhatsApp"
               >
                 <Share2 className="w-3.5 h-3.5" />
                 <span>WhatsApp Bill</span>
               </button>
             </div>
-
             {whatsappError && (
-              <span className="text-red-400 text-[10px] font-bold animate-pulse">{whatsappError}</span>
+              <span className="text-red-400 text-[10px] font-bold px-1 animate-pulse">{whatsappError}</span>
             )}
-
-            <button
-              onClick={onClose}
-              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-              title="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
         </div>
 
@@ -425,6 +458,39 @@ _Thank you for your business with us!_`;
               </div>
             </div>
           )}
+        </div>
+
+        {/* Modal Sticky Bottom Action Footer */}
+        <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-3 text-xs text-slate-300 shrink-0 select-none">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400 hidden xs:inline">Total:</span>
+            <span className="font-mono font-black text-sm text-emerald-400">₹{sale.grand_total}</span>
+            <span className="text-slate-600 hidden sm:inline">•</span>
+            <span className="text-slate-400 text-[11px] hidden sm:inline">{items.length} items</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrint}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer active:scale-95 transition"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print</span>
+            </button>
+            <button
+              onClick={handleWhatsAppSend}
+              className="bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer active:scale-95 transition"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>WhatsApp</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold cursor-pointer transition"
+            >
+              Done
+            </button>
+          </div>
         </div>
       </div>
     </div>

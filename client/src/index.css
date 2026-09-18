@@ -330,6 +330,11 @@ textarea:focus {
 
 /* Print CSS Rules */
 @media print {
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
   body * {
     visibility: hidden;
   }
@@ -337,14 +342,18 @@ textarea:focus {
     visibility: visible;
   }
   .printable-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    margin: 0;
-    padding: 0;
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 6mm !important;
     border: none !important;
     box-shadow: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    z-index: 999999 !important;
   }
   .no-print {
     display: none !important;
