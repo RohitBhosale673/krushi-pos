@@ -1,0 +1,128 @@
+import React from 'react';
+import {
+  LayoutDashboard, ShoppingCart, Package, Layers, BarChart3,
+  Truck, Users, CreditCard, MessageSquare, RotateCcw, Undo2,
+  DollarSign, PieChart, UserCheck, Settings, ShieldAlert, Cpu
+} from 'lucide-react';
+
+export default function Sidebar({ activeTab, onSelectTab, userPermissions = [] }) {
+  const menuGroups = [
+    {
+      title: 'CORE BILLING & STOCK',
+      items: [
+        { id: 'dashboard', label: 'Executive Dashboard', icon: LayoutDashboard, perm: null },
+        { id: 'pos', label: 'POS Cashier Billing', icon: ShoppingCart, perm: 'pos:create', badge: 'F2', badgeType: 'shortcut' },
+        { id: 'products', label: 'Product Master', icon: Package, perm: 'products:view' },
+        { id: 'batches', label: 'Batches & FEFO', icon: Layers, perm: 'batches:view' },
+        { id: 'inventory', label: 'Stock Movement', icon: BarChart3, perm: 'batches:view' }
+      ]
+    },
+    {
+      title: 'PURCHASE & VENDORS',
+      items: [
+        { id: 'purchases', label: 'Purchase Entry', icon: Truck, perm: 'purchases:view' },
+        { id: 'suppliers', label: 'Suppliers & Ledger', icon: Users, perm: 'suppliers:view' }
+      ]
+    },
+    {
+      title: 'FARMERS & CREDIT (UDHAR)',
+      items: [
+        { id: 'customers', label: 'Customer Directory', icon: Users, perm: 'customers:view' },
+        { id: 'udhar', label: 'Udhar & Aging Ledger', icon: CreditCard, perm: 'udhar:view', badge: 'Alert', badgeType: 'danger' },
+        { id: 'sms', label: 'SMS Reminder Hub', icon: MessageSquare, perm: 'sms:send' }
+      ]
+    },
+    {
+      title: 'RETURNS & CASH FLOW',
+      items: [
+        { id: 'sales_returns', label: 'Sales Returns', icon: RotateCcw, perm: 'returns:sales_return' },
+        { id: 'purchase_returns', label: 'Purchase Returns', icon: Undo2, perm: 'returns:purchase_return' },
+        { id: 'expenses', label: 'Store Expenses', icon: DollarSign, perm: 'expenses:manage' }
+      ]
+    },
+    {
+      title: 'MANAGEMENT & AUDIT',
+      items: [
+        { id: 'reports', label: 'Reports & GST Analytics', icon: PieChart, perm: 'reports:view' },
+        { id: 'users', label: 'Users & Roles', icon: UserCheck, perm: 'users:manage' },
+        { id: 'settings', label: 'Business Settings', icon: Settings, perm: 'settings:manage' },
+        { id: 'audit', label: 'Security Audit Logs', icon: ShieldAlert, perm: 'audit:view' }
+      ]
+    }
+  ];
+
+  const hasPerm = (permStr) => {
+    if (!permStr) return true;
+    return userPermissions.includes(permStr) || userPermissions.includes('all');
+  };
+
+  return (
+    <aside className="w-64 bg-slate-950 text-slate-300 flex flex-col border-r border-slate-800/80 shrink-0 select-none overflow-y-auto dark-scrollbar">
+      <div className="p-3 space-y-5 flex-1">
+        {menuGroups.map((group, gIdx) => (
+          <div key={gIdx}>
+            <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 flex items-center justify-between">
+              <span>{group.title}</span>
+            </p>
+            <div className="space-y-0.5">
+              {group.items.map((item) => {
+                if (!hasPerm(item.perm)) return null;
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => onSelectTab(item.id)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all group cursor-pointer relative ${
+                      isActive
+                        ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-950/50'
+                        : 'text-slate-400 hover:text-slate-100 hover:bg-slate-900'
+                    }`}
+                  >
+                    {/* Active left indicator pill */}
+                    {isActive && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white rounded-r-full shadow-sm"></span>
+                    )}
+
+                    <div className="flex items-center gap-2.5">
+                      <Icon className={`w-4 h-4 transition ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-emerald-400'}`} />
+                      <span className="tracking-tight">{item.label}</span>
+                    </div>
+
+                    {item.badge && (
+                      item.badgeType === 'shortcut' ? (
+                        <kbd className={`kbd-chip ${isActive ? 'bg-emerald-800 text-white border-emerald-700' : 'kbd-chip-dark'}`}>
+                          {item.badge}
+                        </kbd>
+                      ) : (
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase ${
+                          isActive
+                            ? 'bg-red-500/30 text-white border border-red-400/40'
+                            : 'bg-red-950/80 text-red-400 border border-red-800/60 animate-pulse'
+                        }`}>
+                          {item.badge}
+                        </span>
+                      )
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Enterprise System Info Footer */}
+      <div className="p-3 border-t border-slate-800/80 bg-slate-950/90 text-[11px] text-slate-500 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-slate-400">Engine Build</span>
+          <span className="font-mono text-emerald-400 font-bold">v2.4.0-PRO</span>
+        </div>
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-slate-500">GST Compliance</span>
+          <span className="text-slate-400">Rule 46 Active</span>
+        </div>
+      </div>
+    </aside>
+  );
+}

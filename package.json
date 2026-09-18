@@ -1,0 +1,25 @@
+{
+  "name": "krushi-pos",
+  "version": "1.0.0",
+  "description": "KrushiPOS - Agricultural Retail POS & Business Management System",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "server": "node server/src/index.js",
+    "server:dev": "node --watch server/src/index.js",
+    "client": "cd client && npm run dev",
+    "dev": "node scripts/dev.js",
+    "test": "cd server && npm test",
+    "seed": "node server/src/db/seed.js"
+  },
+  "keywords": [
+    "pos",
+    "agriculture",
+    "retail",
+    "billing",
+    "inventory",
+    "krushi"
+  ],
+  "author": "KrushiPOS",
+  "license": "MIT"
+}
